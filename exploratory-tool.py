@@ -44,7 +44,7 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    This is the loaded event log:
+    This is the enriched event log:
     """)
     return
 
@@ -59,9 +59,13 @@ def _(browser, pd, pm4py):
             event_log = pm4py.read_xes(path, variant="rustxes")
     else:
         event_log = pd.DataFrame()
-
-    event_log
     return (event_log,)
+
+
+@app.cell
+def _(enriched_event_log):
+    enriched_event_log
+    return
 
 
 @app.cell(hide_code=True)
@@ -131,8 +135,8 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(ACTIVITY, event_log, mo):
-    activity_stats = event_log[ACTIVITY].value_counts()
+def _(ACTIVITY, enriched_event_log, mo):
+    activity_stats = enriched_event_log[ACTIVITY].value_counts()
     activity_list = list(activity_stats.index)
 
     activity_dropdown = mo.ui.dropdown(
@@ -144,8 +148,8 @@ def _(ACTIVITY, event_log, mo):
 
 
 @app.cell(hide_code=True)
-def _(ACTIVITY, activity_dropdown, event_log, mo):
-    events_of_selected_activity = event_log[event_log[ACTIVITY] == activity_dropdown.value]
+def _(ACTIVITY, activity_dropdown, enriched_event_log, mo):
+    events_of_selected_activity = enriched_event_log[enriched_event_log[ACTIVITY] == activity_dropdown.value]
     events_of_selected_activity = events_of_selected_activity.dropna(axis=1, how="all")
 
     selectable_attributes = events_of_selected_activity.columns.tolist() 
@@ -234,10 +238,10 @@ def _(CASE_ID, event_log, mo):
 
 
 @app.cell(hide_code=True)
-def _(ACTIVITY, CASE_ID, COMPLETION_TIME, case_selector, event_log):
-    case_data = event_log[event_log[CASE_ID] == case_selector.value]
+def _(ACTIVITY, CASE_ID, COMPLETION_TIME, case_selector, enriched_event_log):
+    case_data = enriched_event_log[enriched_event_log[CASE_ID] == case_selector.value]
     fixed_columns = [CASE_ID, ACTIVITY, COMPLETION_TIME]
-    other_columns = event_log.columns.difference(fixed_columns).to_list()
+    other_columns = enriched_event_log.columns.difference(fixed_columns).to_list()
 
     case_data[fixed_columns+other_columns]
     return
@@ -262,11 +266,11 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(ACTIVITY, activity_stats, event_log, pd):
+def _(ACTIVITY, activity_stats, enriched_event_log, pd):
     _data = []
     for _activity in list(activity_stats.index):
-      _filtered_log = event_log[event_log[ACTIVITY] == _activity]
-      counts = { col: _filtered_log[col].count() for col in event_log.columns if col != ACTIVITY}
+      _filtered_log = enriched_event_log[enriched_event_log[ACTIVITY] == _activity]
+      counts = { col: _filtered_log[col].count() for col in enriched_event_log.columns if col != ACTIVITY}
       _data.append(counts)
     schema_usages = pd.DataFrame.from_records(_data, index=activity_stats.index)
 
@@ -291,6 +295,38 @@ def _(schema_usages):
 
     schema_usages[partial_rows]
     return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Event Enrichment
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    sample_enrichment = "enriched_event_log['weekday'] = enriched_event_log[COMPLETION_TIME].apply(lambda x: x.weekday())"
+
+    code_editor = mo.ui.code_editor(
+        value=sample_enrichment,
+        language="python",
+        label="Write your code here")
+
+    submit_button = mo.ui.run_button(label="Submit")
+    mo.vstack([code_editor, submit_button])
+    return code_editor, submit_button
+
+
+@app.cell
+def _(code_editor, event_log, submit_button):
+    enriched_event_log = event_log
+    if submit_button.value:
+        exec(code_editor.value)
+        print('done')
+    # mo.stop(not submit_button.value, mo.md("Click **Submit** to run the code."))
+    return (enriched_event_log,)
 
 
 @app.cell(hide_code=True)
