@@ -92,7 +92,7 @@ def _(code_editor, event_log_from_disk, pd, submit_button):
         # activity = event[ACTIVITY]
         # non_standard_schema_columns = activity_schema[activity]
         dict = {k: v for k, v in event[_inconsistent_columns].items() if pd.notna(v)}
-        return dict
+        return dict if dict else None
 
     event_log['folded_data'] = event_log.apply(fold_data, axis=1)
     return event_log, fully_filled_columns
@@ -194,12 +194,9 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## LOG VIEW
+    ## EVENT LOG VIEW
 
-    3. schema population, with filter
-    4. on top we have filters: case, activity (to show the schema)
-    5. check whether we can do completeness inspection on top, or whether we need a new widget
-    6. check how to add more case vis. on top, such as dotted chart
+    - use for overview or filter for a specific case, activity, or time period
     """)
     return
 
@@ -207,6 +204,71 @@ def _(mo):
 @app.cell
 def _(MANDATORY_COLUMNS, STANDARD_COLUMNS, event_log):
     event_log[MANDATORY_COLUMNS+STANDARD_COLUMNS+['folded_data']]
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## ACTIVITY SCHEMA VIEW
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(
+    ACTIVITY,
+    CASE_ID,
+    MANDATORY_COLUMNS,
+    STANDARD_COLUMNS,
+    activity_stats,
+    event_log,
+    pd,
+):
+    _data = []
+    for _activity in list(activity_stats.index):
+      _filtered_log = event_log[event_log[ACTIVITY] == _activity]
+      counts = { col: _filtered_log[col].count() for col in event_log.columns if col != ACTIVITY}
+      _data.append(counts)
+    schema_usages = pd.DataFrame.from_records(_data, index=activity_stats.index)
+
+    schema_usages['incidence'] = schema_usages[CASE_ID]
+
+    _non_schema_columns = MANDATORY_COLUMNS + STANDARD_COLUMNS + ['folded_data', 'incidence']
+    _extra_columns = [col for col in schema_usages.columns if col not in _non_schema_columns]
+
+    schema_usages['extra_schema'] = schema_usages[_extra_columns].apply(
+        lambda row: {col: value for col, value in row.items() if value != 0},
+        axis=1
+    )
+
+    schema_usages['extra_schema_keys'] = schema_usages['extra_schema'].apply(
+        lambda extra_schema: sorted(extra_schema.keys())
+    )
+
+    schema_usages['missing_values'] = schema_usages.apply(
+        lambda row: {
+            col: value - row['incidence']
+            for col, value in row['extra_schema'].items()
+            if value - row['incidence'] != 0
+        },
+        axis=1
+    )
+
+    _no_rows = len(schema_usages)
+    partial_rows = [col for col in schema_usages.columns if 2 <= (schema_usages[col] != 0).sum() < _no_rows]
+
+    partial_schema_usages = schema_usages[partial_rows]
+    # schema_usages[['incidence', 'extra_schema_keys', 'missing_values']]
+    return partial_schema_usages, schema_usages
+
+
+@app.cell(hide_code=True)
+def _(mo, partial_schema_usages, schema_usages):
+    mo.ui.tabs({
+        "Activity Schemas": schema_usages[['incidence', 'extra_schema_keys', 'missing_values']],
+        "Schema Overlaps": partial_schema_usages[(partial_schema_usages != 0).any(axis=1)],
+    })
     return
 
 
@@ -235,7 +297,7 @@ def _(ACTIVITY, activity_dropdown, event_log, mo):
     events_of_selected_activity = event_log[event_log[ACTIVITY] == activity_dropdown.value]
     events_of_selected_activity = events_of_selected_activity.dropna(axis=1, how="all")
 
-    selectable_attributes = events_of_selected_activity.columns.tolist() 
+    selectable_attributes = [ a for a in events_of_selected_activity.columns.tolist() if a != 'folded_data' ]
 
     # UI: dropdown to choose column
     attribute_dropdown = mo.ui.dropdown(
@@ -279,82 +341,21 @@ def _(
 
 
 @app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    TODO: Work on events tab: mandatory columns then selected, then all other of the schema
-    """)
-    return
-
-
-@app.cell(hide_code=True)
 def _(
     MANDATORY_COLUMNS,
     STANDARD_COLUMNS,
+    activity_dropdown,
     attribute_bin_selector,
     attribute_histogram,
     events_of_selected_activity,
     mo,
+    schema_usages,
 ):
+    _events_extra_columns = schema_usages.loc[activity_dropdown.value, 'extra_schema_keys']
+
     mo.ui.tabs({
-        "Events": events_of_selected_activity[MANDATORY_COLUMNS+STANDARD_COLUMNS],
-        "Histogram": mo.hstack([attribute_bin_selector, attribute_histogram]),
-    })
-    return
-
-
-@app.cell(hide_code=True)
-def _(
-    ACTIVITY,
-    CASE_ID,
-    MANDATORY_COLUMNS,
-    STANDARD_COLUMNS,
-    activity_stats,
-    event_log,
-    pd,
-):
-    _data = []
-    for _activity in list(activity_stats.index):
-      _filtered_log = event_log[event_log[ACTIVITY] == _activity]
-      counts = { col: _filtered_log[col].count() for col in event_log.columns if col != ACTIVITY}
-      _data.append(counts)
-    schema_usages = pd.DataFrame.from_records(_data, index=activity_stats.index)
-
-    schema_usages['incidence'] = schema_usages[CASE_ID]
-
-    _non_schema_columns = MANDATORY_COLUMNS + STANDARD_COLUMNS + ['folded_data', 'incidence']
-    _extra_columns = [col for col in schema_usages.columns if col not in _non_schema_columns]
-
-    schema_usages['extra_schema'] = schema_usages[_extra_columns].apply(
-        lambda row: {col: value for col, value in row.items() if value != 0},
-        axis=1
-    )
-
-    schema_usages['extra_schema_keys'] = schema_usages['extra_schema'].apply(
-        lambda extra_schema: sorted(extra_schema.keys())
-    )
-
-    schema_usages['extra_schema_missing'] = schema_usages.apply(
-        lambda row: {
-            col: value - row['incidence']
-            for col, value in row['extra_schema'].items()
-            if value - row['incidence'] != 0
-        },
-        axis=1
-    )
-
-    _no_rows = len(schema_usages)
-    partial_rows = [col for col in schema_usages.columns if 2 <= (schema_usages[col] != 0).sum() < _no_rows]
-
-    partial_schema_usages = schema_usages[partial_rows]
-    # schema_usages[['incidence', 'extra_schema_keys', 'extra_schema_missing']]
-    return partial_schema_usages, schema_usages
-
-
-@app.cell(hide_code=True)
-def _(mo, partial_schema_usages, schema_usages):
-    mo.ui.tabs({
-        "Activity Schemas": schema_usages[['incidence', 'extra_schema_keys', 'extra_schema_missing']],
-        "Schema Overlaps": partial_schema_usages[(partial_schema_usages != 0).any(axis=1)],
+        "Events": events_of_selected_activity[MANDATORY_COLUMNS+STANDARD_COLUMNS+_events_extra_columns],
+        "Histogram": mo.vstack([attribute_bin_selector, attribute_histogram]),
     })
     return
 
@@ -369,7 +370,7 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(mo):
-    sample_enrichment = "event_log['weekday'] = event_log[COMPLETION_TIME].apply(lambda x: x.weekday())"
+    sample_enrichment = "event_log['weekday'] = event_log['time:timestamp'].apply(lambda x: x.weekday())"
 
     code_editor = mo.ui.code_editor(
         value=sample_enrichment,
