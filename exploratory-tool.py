@@ -58,7 +58,12 @@ def _(browser, pd, pm4py):
 
 
 @app.cell(hide_code=True)
-def _(code_editor, event_log_from_disk, pd, submit_button):
+def _(
+    event_enrichment_code_editor,
+    event_enrichment_submit_button,
+    event_log_from_disk,
+    pd,
+):
     # initialize the event log
     event_log = event_log_from_disk
 
@@ -83,8 +88,8 @@ def _(code_editor, event_log_from_disk, pd, submit_button):
     _inconsistent_columns = [ col for col in _inconsistent_columns if col not in _empty_columns ]
 
     # add manual enrichments here
-    if submit_button.value:
-        exec(code_editor.value)
+    if event_enrichment_submit_button.value:
+        exec(event_enrichment_code_editor.value)
         print('done')
 
     # add folding of inconsistent columns
@@ -370,27 +375,104 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(mo):
-    sample_enrichment = "event_log['weekday'] = event_log['time:timestamp'].apply(lambda x: x.weekday())"
+    _sample_enrichment = "event_log['weekday'] = event_log['time:timestamp'].apply(lambda x: x.weekday())"
 
-    code_editor = mo.ui.code_editor(
-        value=sample_enrichment,
+    event_enrichment_code_editor = mo.ui.code_editor(
+        value=_sample_enrichment,
         language="python",
         label="Write your code here")
 
-    submit_button = mo.ui.run_button(label="Submit")
-    mo.vstack([code_editor, submit_button])
-    return code_editor, submit_button
+    event_enrichment_submit_button = mo.ui.run_button(label="Submit")
+    mo.vstack([event_enrichment_code_editor, event_enrichment_submit_button])
+    return event_enrichment_code_editor, event_enrichment_submit_button
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## TODO: Case log
-
-    - add case log
-    - have a histogram on case attributes
-    - have a scatter plot on case attributes
+    ## CASE LOG VIEW
     """)
+    return
+
+
+@app.cell
+def _(mo):
+    _sample_enrichment = "case_log['duration'] = case_log['end_time'] - case_log['start_time']"
+
+    case_enrichment_code_editor = mo.ui.code_editor(
+        value=_sample_enrichment,
+        language="python",
+        label="Write your code here")
+
+    case_enrichment_submit_button = mo.ui.run_button(label="Submit")
+    mo.vstack([case_enrichment_code_editor, case_enrichment_submit_button])
+    return case_enrichment_code_editor, case_enrichment_submit_button
+
+
+@app.cell(hide_code=True)
+def _(
+    CASE_ID,
+    case_enrichment_code_editor,
+    case_enrichment_submit_button,
+    event_log,
+):
+    cases = event_log.groupby(CASE_ID)
+    case_log = cases.agg(
+        start_time=('time:timestamp','first'),
+        end_time=('time:timestamp', 'last'),
+        no_of_events=('concept:name', 'count'))
+
+    # add manual enrichments here
+    if case_enrichment_submit_button.value:
+        exec(case_enrichment_code_editor.value)
+        print('done')
+
+    case_log
+    return (case_log,)
+
+
+@app.cell(hide_code=True)
+def _(case_log, mo):
+    _categorical_case_columns = case_log.reset_index().select_dtypes(include=["number", "object", "category", "bool", "datetime", "datetimetz"]).columns.tolist()
+
+    x_axis_dropdown = mo.ui.dropdown(
+        options=_categorical_case_columns,
+        value=_categorical_case_columns[0] if _categorical_case_columns else None,
+        label="X-axis",
+        allow_select_none=False,
+        searchable=True,
+    )
+
+    y_axis_dropdown = mo.ui.dropdown(
+        options=_categorical_case_columns,
+        value=_categorical_case_columns[1] if len(_categorical_case_columns) > 1 else (_categorical_case_columns[0] if _categorical_case_columns else None),
+        label="Y-axis",
+        allow_select_none=False,
+        searchable=True,
+    )
+
+    mo.hstack([x_axis_dropdown, y_axis_dropdown], justify="start")
+    return x_axis_dropdown, y_axis_dropdown
+
+
+@app.cell(hide_code=True)
+def _(case_log, px, x_axis_dropdown, y_axis_dropdown):
+    case_log_reset = case_log.reset_index()
+
+    case_scatter_fig = px.scatter(
+        case_log_reset,
+        x=x_axis_dropdown.value,
+        y=y_axis_dropdown.value,
+        hover_data=case_log_reset.columns.tolist(),
+        title=f"{y_axis_dropdown.value} vs {x_axis_dropdown.value}",
+        labels={
+            x_axis_dropdown.value: x_axis_dropdown.value,
+            y_axis_dropdown.value: y_axis_dropdown.value,
+        },
+    )
+    case_scatter_fig.update_traces(marker=dict(size=8, opacity=0.7))
+    case_scatter_fig
+
     return
 
 
