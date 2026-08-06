@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.14"
+__generated_with = "0.23.16"
 app = marimo.App(width="medium")
 
 
@@ -315,12 +315,8 @@ def _(ACTIVITY, activity_dropdown, event_log, mo):
 
 @app.cell(hide_code=True)
 def _(activity_dropdown, attribute_dropdown, mo):
-    attribute_bin_selector = mo.ui.number(
-        start=1, stop=None, step=1, label="Enter number of bins", value=None
-    )
-
+    attribute_bin_selector = mo.ui.number(label="Enter number of bins", value=None)
     attribute_log_scale = mo.ui.checkbox(label="Y-axis log scale", value=False)
-
 
     mo.hstack([activity_dropdown, attribute_dropdown], justify="start") # attribute_bin_selector, attribute_log_scale
     return attribute_bin_selector, attribute_log_scale
@@ -359,8 +355,8 @@ def _(
     _events_extra_columns = schema_usages.loc[activity_dropdown.value, 'extra_schema_keys']
 
     mo.ui.tabs({
-        "Events": events_of_selected_activity[MANDATORY_COLUMNS+STANDARD_COLUMNS+_events_extra_columns],
         "Histogram": mo.vstack([attribute_bin_selector, attribute_histogram]),
+        "Events": events_of_selected_activity[MANDATORY_COLUMNS+STANDARD_COLUMNS+_events_extra_columns]
     })
     return
 
@@ -472,7 +468,6 @@ def _(case_log, px, x_axis_dropdown, y_axis_dropdown):
     )
     case_scatter_fig.update_traces(marker=dict(size=8, opacity=0.7))
     case_scatter_fig
-
     return
 
 
