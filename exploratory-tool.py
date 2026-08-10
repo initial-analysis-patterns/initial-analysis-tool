@@ -58,14 +58,50 @@ def _(browser, pd, pm4py):
 
 
 @app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Time Zone Selection
+    """)
+    import pytz
+    from datetime import datetime
+
+    _common_timezones = pytz.common_timezones
+
+    _default_timezone = "UTC" if "UTC" in _common_timezones else _common_timezones[0]
+
+    timezone_dropdown = mo.ui.dropdown(
+        options=_common_timezones,
+        value=_default_timezone,
+        label="Select Time Zone",
+        allow_select_none=False,
+        searchable=True,
+    )
+
+    mo.vstack([
+        mo.md("Select a time zone to apply to all timestamp columns in the event log and case log:"),
+        mo.hstack([timezone_dropdown], justify="start")
+    ])
+    return (timezone_dropdown,)
+
+
+@app.cell(hide_code=True)
 def _(
     event_enrichment_code_editor,
     event_enrichment_submit_button,
     event_log_from_disk,
     pd,
+    timezone_dropdown,
 ):
     # initialize the event log
     event_log = event_log_from_disk
+
+    # apply the selected timezone to all timestamp columns
+    _selected_timezone = timezone_dropdown.value
+
+    for _col in event_log.columns:
+        if isinstance(event_log[_col].dtype, pd.DatetimeTZDtype):
+            event_log[_col] = event_log[_col].dt.tz_convert(_selected_timezone)
+            print('Converting column', _col, 'to timezone', _selected_timezone)
 
     # columns that are filled for every row vs. columns that are not consistently filled
     fully_filled_columns = [ col for col in event_log.columns if event_log[col].notna().all() ]
@@ -230,6 +266,7 @@ def _(
     event_log,
     pd,
 ):
+
     _data = []
     for _activity in list(activity_stats.index):
       _filtered_log = event_log[event_log[ACTIVITY] == _activity]
@@ -242,10 +279,13 @@ def _(
     _non_schema_columns = MANDATORY_COLUMNS + STANDARD_COLUMNS + ['folded_data', 'incidence']
     _extra_columns = [col for col in schema_usages.columns if col not in _non_schema_columns]
 
-    schema_usages['extra_schema'] = schema_usages[_extra_columns].apply(
-        lambda row: {col: value for col, value in row.items() if value != 0},
-        axis=1
-    )
+    if _extra_columns:
+        schema_usages['extra_schema'] = schema_usages[_extra_columns].apply(
+            lambda row: {col: value for col, value in row.items() if value != 0},
+            axis=1
+        )
+    else:
+        schema_usages['extra_schema'] = [{} for _ in range(len(schema_usages))]
 
     schema_usages['extra_schema_keys'] = schema_usages['extra_schema'].apply(
         lambda extra_schema: sorted(extra_schema.keys())
