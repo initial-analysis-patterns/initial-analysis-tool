@@ -222,8 +222,24 @@ def _(
 
     # all remaining columns are not shared
     # anyway, we need to compute the schema for each activity separately and store it and then compute the enrichment from there
+
+    # create a preliminary case log from the case features in the event log
+
+    # compute case features: columns that take at most one unique (non-null) value per case,
+    # i.e. 0 (all NaN) or 1 unique value within each case group
+    _case_groups = event_log.groupby(CASE_ID)
+
+    CASE_FEATURE_COLUMNS = [
+        col for col in event_log.columns
+        if col != CASE_ID
+        and col != 'folded_data'
+        and _case_groups[col].apply(lambda s: s.dropna().nunique()).max() <= 1
+    ]
+
+    print("Case feature columns (unique value per case, possibly NaN):", CASE_FEATURE_COLUMNS)
     return (
         ACTIVITY,
+        CASE_FEATURE_COLUMNS,
         CASE_ID,
         MANDATORY_COLUMNS,
         STANDARD_COLUMNS,
@@ -243,8 +259,18 @@ def _(mo):
 
 
 @app.cell
-def _(MANDATORY_COLUMNS, STANDARD_COLUMNS, event_log):
-    event_log[MANDATORY_COLUMNS+STANDARD_COLUMNS+['folded_data']]
+def _(
+    CASE_FEATURE_COLUMNS,
+    MANDATORY_COLUMNS,
+    STANDARD_COLUMNS,
+    case_log,
+    event_log,
+    mo,
+):
+    mo.ui.tabs({
+        "Event Log": event_log[[col for col in MANDATORY_COLUMNS+STANDARD_COLUMNS+['folded_data'] if col not in CASE_FEATURE_COLUMNS]],
+        "Case Log": case_log
+    })
     return
 
 
@@ -423,14 +449,6 @@ def _(mo):
     return event_enrichment_code_editor, event_enrichment_submit_button
 
 
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## CASE LOG VIEW
-    """)
-    return
-
-
 @app.cell
 def _(mo):
     _sample_enrichment = "case_log['duration'] = case_log['end_time'] - case_log['start_time']"
@@ -447,6 +465,7 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(
+    CASE_FEATURE_COLUMNS,
     CASE_ID,
     case_enrichment_code_editor,
     case_enrichment_submit_button,
@@ -456,14 +475,14 @@ def _(
     case_log = cases.agg(
         start_time=('time:timestamp','first'),
         end_time=('time:timestamp', 'last'),
-        no_of_events=('concept:name', 'count'))
+        no_of_events=('concept:name', 'count'),
+        **{col: (col, 'first') for col in CASE_FEATURE_COLUMNS}
+    )
 
     # add manual enrichments here
     if case_enrichment_submit_button.value:
         exec(case_enrichment_code_editor.value)
         print('done')
-
-    case_log
     return (case_log,)
 
 
