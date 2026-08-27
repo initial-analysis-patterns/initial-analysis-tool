@@ -20,10 +20,14 @@ def _():
     import altair as alt
     alt.data_transformers.enable("vegafusion")
     import plotly.express as px
-    import temporal_characteristics_util as tcu
     import importlib
+    import temporal_characteristics_util as tcu
     importlib.reload(tcu)
-    return mo, pd, pm4py, px, tcu
+    import attribute_util as au
+    importlib.reload(au)
+    import data_quality_util as dqu
+    importlib.reload(dqu)
+    return au, dqu, mo, pd, pm4py, px, tcu
 
 
 @app.cell(hide_code=True)
@@ -60,8 +64,16 @@ def _(browser, pd, pm4py):
 
 
 @app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Temporal Characteristics of the Log
+    """)
+    return
+
+
+@app.cell(hide_code=True)
 def _(event_log, pd, tcu):
-    # Show the format used by timestamp columns
+    # Show the format used by all timestamp columns
 
     _timestamp_columns = [
         col
@@ -103,8 +115,15 @@ def _(event_log, mo, tcu):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Time Zone Selection
+    ## Initialize the Event Log
+
+    In this stage, a common time zone and granularity are applied to all timestamp columns in the log; uninformative columns are dropped; and enrichments are applied.
     """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
     import pytz
     from datetime import datetime
 
@@ -140,6 +159,7 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(
+    au,
     event_enrichment_code_editor,
     event_enrichment_submit_button,
     event_log_from_disk,
@@ -211,6 +231,9 @@ def _(
         exec(event_enrichment_code_editor.value)
         print('done')
 
+    # find attribute pairs that encode the same information
+    redundant_attribute_candidates = au.find_redundant_attribute_pairs(event_log)
+
     # add folding of inconsistent columns
     def fold_data(event):
         # activity = event[ACTIVITY]
@@ -219,7 +242,7 @@ def _(
         return dict if dict else None
 
     event_log['folded_data'] = event_log.apply(fold_data, axis=1)
-    return event_log, fully_filled_columns
+    return event_log, fully_filled_columns, redundant_attribute_candidates
 
 
 @app.cell(hide_code=True)
@@ -332,10 +355,54 @@ def _(
 
 
 @app.cell(hide_code=True)
-def _(CASE_ID_dropdown, COMPLETION_TIME_dropdown, event_log, mo, tcu):
+def _(ACTIVITY_dropdown, CASE_ID_dropdown, dqu, event_log, mo, pd):
+    # Based on the selected CASE ID column, check for and remove events that have an identical counterpart within the same case
+    _comparison_columns = [
+        col for col in event_log.columns
+        if col not in (CASE_ID_dropdown.value, 'folded_data')
+    ]
+
+    duplicate_events = dqu.find_duplicate_events(
+        event_log, CASE_ID_dropdown.value, _comparison_columns
+    )
+
+    deduplicated_event_log = dqu.remove_duplicate_events(
+        event_log, CASE_ID_dropdown.value, _comparison_columns
+    )
+
+    duplicate_summary = pd.DataFrame({
+        'Events before': [len(event_log)],
+        'Duplicate events': [len(duplicate_events)],
+        'Cases affected': [duplicate_events[CASE_ID_dropdown.value].nunique()],
+        'Events after': [len(deduplicated_event_log)],
+    })
+
+    if duplicate_events.empty:
+        duplicate_activities_by_case = pd.DataFrame(
+            columns=[CASE_ID_dropdown.value, 'duplicated_activities']
+        )
+    else:
+        duplicate_activities_by_case = dqu.get_duplicate_activities_by_case(
+            duplicate_events, CASE_ID_dropdown.value, ACTIVITY_dropdown.value
+        )
+
+    mo.ui.tabs({
+        "Summary of Duplicate Events": duplicate_summary
+    })
+    return (deduplicated_event_log,)
+
+
+@app.cell(hide_code=True)
+def _(
+    CASE_ID_dropdown,
+    COMPLETION_TIME_dropdown,
+    deduplicated_event_log,
+    mo,
+    tcu,
+):
     # Based on the selected COMPLETION TIME column, check whether events are ordered by completion time within each case and across the log
     case_ordering_summary, log_ordering_summary = tcu.analyze_event_ordering(
-        event_log, CASE_ID_dropdown.value, COMPLETION_TIME_dropdown.value
+        deduplicated_event_log, CASE_ID_dropdown.value, COMPLETION_TIME_dropdown.value
     )
     mo.ui.tabs({
         "Case-wise ordering": case_ordering_summary,
@@ -350,14 +417,22 @@ def _(mo):
         label="Order all events by completion time"
     )
 
-    order_events_button
+    mo.vstack([
+        mo.md(r"""Order Events in the Log"""),
+        order_events_button
+    ])
     return (order_events_button,)
 
 
 @app.cell(hide_code=True)
-def _(COMPLETION_TIME_dropdown, event_log, order_events_button):
+def _(
+    COMPLETION_TIME_dropdown,
+    deduplicated_event_log,
+    event_log,
+    order_events_button,
+):
     if order_events_button.value:
-        ordered_event_log = event_log.copy()
+        ordered_event_log = deduplicated_event_log.copy()
 
         ordered_event_log['original_order'] = range(len(ordered_event_log))
 
@@ -373,7 +448,13 @@ def _(COMPLETION_TIME_dropdown, event_log, order_events_button):
         ].is_monotonic_increasing
     else:
         ordered_event_log = event_log
-    return
+    return (ordered_event_log,)
+
+
+@app.cell(hide_code=True)
+def _(ordered_event_log):
+    initialized_event_log = ordered_event_log
+    return (initialized_event_log,)
 
 
 @app.cell(hide_code=True)
@@ -386,17 +467,17 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(
     CASE_FEATURE_COLUMNS,
     MANDATORY_COLUMNS,
     STANDARD_COLUMNS,
     case_log,
-    event_log,
+    initialized_event_log,
     mo,
 ):
     mo.ui.tabs({
-        "Event Log": event_log[[col for col in MANDATORY_COLUMNS+STANDARD_COLUMNS+['folded_data'] if col not in CASE_FEATURE_COLUMNS]],
+        "Event Log": initialized_event_log[[col for col in MANDATORY_COLUMNS+STANDARD_COLUMNS+['folded_data'] if col not in CASE_FEATURE_COLUMNS]],
         "Case Log": case_log
     })
     return
@@ -597,9 +678,9 @@ def _(
     CASE_ID,
     case_enrichment_code_editor,
     case_enrichment_submit_button,
-    event_log,
+    initialized_event_log,
 ):
-    cases = event_log.groupby(CASE_ID)
+    cases = initialized_event_log.groupby(CASE_ID)
     case_log = cases.agg(
         start_time=('time:timestamp','first'),
         end_time=('time:timestamp', 'last'),
@@ -655,6 +736,61 @@ def _(case_log, px, x_axis_dropdown, y_axis_dropdown):
     )
     case_scatter_fig.update_traces(marker=dict(size=8, opacity=0.7))
     case_scatter_fig
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Attributes
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo, redundant_attribute_candidates):
+    # Select a pair of redundant attribute candidates to inspect
+    _pair_labels = {
+        f"{_row.attribute_a} <-> {_row.attribute_b} ({_row.n_values} values)": _row.Index
+        for _row in redundant_attribute_candidates.itertuples()
+    }
+
+    redundant_pair_dropdown = mo.ui.dropdown(
+        options=_pair_labels,
+        value=next(iter(_pair_labels), None),
+        label="Select attribute pair",
+        searchable=True,
+    )
+
+    mo.vstack([
+        mo.md("Select a pair of redundant attribute candidates, i.e., attributes that show information in a one-to-one relation, to inspect:"),
+        redundant_pair_dropdown
+    ])
+    return (redundant_pair_dropdown,)
+
+
+@app.cell(hide_code=True)
+def _(mo, pd, redundant_attribute_candidates, redundant_pair_dropdown):
+    # Show attribute pairs that encode the same information through a one-to-one value mapping
+    if redundant_attribute_candidates.empty:
+        redundant_pair_overview = pd.DataFrame(
+            columns=['attribute_a', 'attribute_b', 'n_values']
+        )
+        redundant_pair_mapping = pd.DataFrame()
+    else:
+        redundant_pair_overview = redundant_attribute_candidates[
+            ['attribute_a', 'attribute_b', 'n_values']
+        ]
+        _row = redundant_attribute_candidates.loc[redundant_pair_dropdown.value]
+        redundant_pair_mapping = pd.DataFrame({
+            _row['attribute_a']: list(_row['mapping'].keys()),
+            _row['attribute_b']: list(_row['mapping'].values()),
+        })
+
+    mo.ui.tabs({
+        "Redundant attribute candidate pairs": redundant_pair_overview,
+        "Selected mapping": redundant_pair_mapping,
+    })
     return
 
 
