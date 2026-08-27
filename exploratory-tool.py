@@ -20,8 +20,10 @@ def _():
     import altair as alt
     alt.data_transformers.enable("vegafusion")
     import plotly.express as px
-
-    return mo, pd, pm4py, px
+    import temporal_characteristics_util as tcu
+    import importlib
+    importlib.reload(tcu)
+    return mo, pd, pm4py, px, tcu
 
 
 @app.cell(hide_code=True)
@@ -58,101 +60,8 @@ def _(browser, pd, pm4py):
 
 
 @app.cell(hide_code=True)
-def _(event_log, pd):
+def _(event_log, pd, tcu):
     # Show the format used by timestamp columns
-
-    import re
-
-    def infer_timestamp_format_from_column(series):
-        """
-        Infer a common timestamp format from a pandas Series.
-
-        Supports:
-          %Y-%m-%d
-          %Y-%d-%m
-          %m-%d-%Y
-          %d-%m-%Y
-
-        with optional:
-          HH:MM:SS
-          timezone offset like +00:00
-        """
-
-        candidates = {
-            "YMD": "%Y-%m-%d",
-            "YDM": "%Y-%d-%m",
-            "MDY": "%m-%d-%Y",
-            "DMY": "%d-%m-%Y",
-        }
-
-        possible = set(candidates.keys())
-        detected_suffix = None
-
-        for value in series.dropna():
-            s = str(value).strip()
-
-            match = re.match(
-                r"^(\d{1,4})[-/](\d{1,2})[-/](\d{1,4})"
-                r"(?:[ T](\d{2}):(\d{2}):(\d{2})([+-]\d{2}:\d{2}|Z)?)?$",
-                s
-            )
-
-            if not match:
-                continue
-
-            a, b, c, hour, minute, second, tz = match.groups()
-            a, b, c = int(a), int(b), int(c)
-
-            valid_for_row = set()
-
-            if len(match.group(1)) == 4 and 1 <= b <= 12 and 1 <= c <= 31:
-                valid_for_row.add("YMD")
-
-            if len(match.group(1)) == 4 and 1 <= b <= 31 and 1 <= c <= 12:
-                valid_for_row.add("YDM")
-
-            if len(match.group(3)) == 4 and 1 <= a <= 12 and 1 <= b <= 31:
-                valid_for_row.add("MDY")
-
-            if len(match.group(3)) == 4 and 1 <= a <= 31 and 1 <= b <= 12:
-                valid_for_row.add("DMY")
-
-            possible &= valid_for_row
-
-            if hour is not None:
-                detected_suffix = (
-                    "T%H:%M:%S"
-                    if "T" in s
-                    else " %H:%M:%S"
-                )
-
-                if tz is not None:
-                    detected_suffix += "%z"
-
-            if len(possible) == 1:
-                break
-
-        if len(possible) == 1:
-            key = next(iter(possible))
-            return {
-                "status": "DETECTED",
-                "format": candidates[key] + (detected_suffix or "")
-            }
-
-        if len(possible) > 1:
-            return {
-                "status": "AMBIGUOUS",
-                "format": ", ".join(
-                    candidates[x] + (detected_suffix or "")
-                    for x in sorted(possible)
-                )
-            }
-
-        return {
-            "status": "NOT DETECTED",
-            "format": None
-        }
-
 
     _timestamp_columns = [
         col
@@ -166,7 +75,7 @@ def _(event_log, pd):
     _format_results = []
 
     for _col in _timestamp_columns:
-        _result = infer_timestamp_format_from_column(event_log[_col])
+        _result = tcu.infer_timestamp_format_from_column(event_log[_col])
 
         _format_results.append({
             "Timestamp column": _col,
@@ -181,139 +90,9 @@ def _(event_log, pd):
 
 
 @app.cell(hide_code=True)
-def _(event_log, mo, pd):
+def _(event_log, mo, tcu):
     # Show the granularity level of the encoded timestamps in the log, including whether timestamp components and timezone are constant
-
-    COMPONENT_LEVELS = [
-        'year',
-        'month',
-        'day',
-        'hour',
-        'minute',
-        'second',
-        'millisecond',
-        'sub-millisecond',
-        'timezone'
-    ]
-
-
-    def get_components(ts):
-        return (
-            ts.year,
-            ts.month,
-            ts.day,
-            ts.hour,
-            ts.minute,
-            ts.second,
-            ts.microsecond // 1000,
-            (ts.microsecond % 1000) * 1000 + ts.nanosecond,
-            str(ts.tzinfo) if ts.tzinfo is not None else None,
-        )
-
-
-    _timestamp_columns = [
-        col
-        for col in event_log.columns
-        if (
-            isinstance(event_log[col].dtype, pd.DatetimeTZDtype)
-            or pd.api.types.is_datetime64_dtype(event_log[col])
-        )
-    ]
-
-
-    # detailed component analysis
-    _summaries = []
-
-    for _col in _timestamp_columns:
-        _timestamps = event_log[_col].dropna()
-
-        if _timestamps.empty:
-            continue
-
-        _components_df = pd.DataFrame(
-            _timestamps.apply(get_components).tolist(),
-            columns=COMPONENT_LEVELS
-        )
-
-        # dropna=False ensures that timezone-naive timestamps are treated
-        # as having one consistent "no timezone" value
-        _unique_counts = _components_df.nunique(dropna=False)
-        _is_constant = _unique_counts == 1
-
-        _summary = pd.DataFrame({
-            'Timestamp column': _col,
-            'Level': COMPONENT_LEVELS,
-            'Constant': _is_constant.values,
-            'Unique values': _unique_counts.values,
-            'Value': [
-                _components_df[_level].iloc[0]
-                if _is_constant[_level]
-                else None
-                for _level in COMPONENT_LEVELS
-            ],
-        })
-
-        _summaries.append(_summary)
-
-
-    if _summaries:
-        timestamp_component_summary = pd.concat(
-            _summaries,
-            ignore_index=True
-        )
-    else:
-        timestamp_component_summary = pd.DataFrame(
-            columns=[
-                'Timestamp column',
-                'Level',
-                'Constant',
-                'Unique values',
-                'Value'
-            ]
-        )
-
-
-    # determine the constant temporal prefix for each timestamp column
-    # timezone is excluded because it is not part of the
-    # coarsest-to-finest temporal hierarchy
-    _constant_prefixes = []
-
-    for _col in _timestamp_columns:
-        _timestamps = event_log[_col].dropna()
-
-        if _timestamps.empty:
-            continue
-
-        _components_df = pd.DataFrame(
-            _timestamps.apply(get_components).tolist(),
-            columns=COMPONENT_LEVELS
-        )
-
-        _unique_counts = _components_df.nunique(dropna=False)
-
-        _constant_prefix = []
-
-        for _level in COMPONENT_LEVELS[:-1]:
-            if _unique_counts[_level] != 1:
-                break
-
-            _constant_prefix.append(
-                f"{_level}={_components_df[_level].iloc[0]}"
-            )
-
-        _constant_prefixes.append({
-            'Timestamp column': _col,
-            'Constant prefix': (
-                ', '.join(_constant_prefix)
-                if _constant_prefix
-                else 'None'
-            )
-        })
-
-
-    timestamp_constant_prefixes = pd.DataFrame(_constant_prefixes)
-
-
+    timestamp_component_summary, timestamp_constant_prefixes = tcu.analyze_timestamp_components(event_log)
     mo.ui.tabs({
         "Component analysis": timestamp_component_summary,
         "Constant prefixes": timestamp_constant_prefixes,
@@ -366,6 +145,7 @@ def _(
     event_log_from_disk,
     granularity_normalization_dropdown,
     pd,
+    tcu,
     timezone_dropdown,
 ):
     # Initialize the event log
@@ -382,22 +162,14 @@ def _(
     # apply the selected timestamp granularity to all timestamp columns
     _target_granularity = granularity_normalization_dropdown.value
 
-    _FREQ_ALIASES = {
-        'day': 'D',
-        'hour': 'h',
-        'minute': 'min',
-        'second': 's',
-        'millisecond': 'ms'
-    }
-
     if _target_granularity is not None:
-        if _target_granularity not in _FREQ_ALIASES:
+        if _target_granularity not in tcu._FREQ_ALIASES:
             print(
                 f"Granularity normalization to '{_target_granularity}' "
                 "is currently not supported."
             )
         else:
-            _freq = _FREQ_ALIASES[_target_granularity]
+            _freq = tcu._FREQ_ALIASES[_target_granularity]
 
             # apply to all timestamp columns
             for _col in event_log.columns:
@@ -560,36 +332,11 @@ def _(
 
 
 @app.cell(hide_code=True)
-def _(CASE_ID_dropdown, COMPLETION_TIME_dropdown, event_log, mo, pd):
+def _(CASE_ID_dropdown, COMPLETION_TIME_dropdown, event_log, mo, tcu):
     # Based on the selected COMPLETION TIME column, check whether events are ordered by completion time within each case and across the log
-
-    _case_ordering = (
-        event_log
-        .groupby(CASE_ID_dropdown.value)[COMPLETION_TIME_dropdown.value]
-        .apply(lambda timestamps: timestamps.is_monotonic_increasing)
+    case_ordering_summary, log_ordering_summary = tcu.analyze_event_ordering(
+        event_log, CASE_ID_dropdown.value, COMPLETION_TIME_dropdown.value
     )
-
-    _cases_total = len(_case_ordering)
-    _cases_ordered = _case_ordering.sum()
-    _cases_unordered = _cases_total - _cases_ordered
-
-    case_ordering_summary = pd.DataFrame({
-        'Cases': [_cases_total],
-        'Ordered': [_cases_ordered],
-        'Not ordered': [_cases_unordered],
-        'All ordered': [_case_ordering.all()]
-    })
-
-    _log_ordered = event_log[
-        COMPLETION_TIME_dropdown.value
-    ].is_monotonic_increasing
-
-    log_ordering_summary = pd.DataFrame({
-        'Events': [len(event_log)],
-        'Globally ordered': [_log_ordered]
-    })
-
-
     mo.ui.tabs({
         "Case-wise ordering": case_ordering_summary,
         "Global ordering": log_ordering_summary,
