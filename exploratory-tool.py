@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.16"
+__generated_with = "0.24.0"
 app = marimo.App(width="medium")
 
 
@@ -20,8 +20,10 @@ def _():
     import altair as alt
     alt.data_transformers.enable("vegafusion")
     import plotly.express as px
-
-    return mo, pd, pm4py, px
+    import temporal_characteristics_util as tcu
+    import importlib
+    importlib.reload(tcu)
+    return mo, pd, pm4py, px, tcu
 
 
 @app.cell(hide_code=True)
@@ -42,7 +44,7 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(browser, pd, pm4py):
-    # load event log from disk
+    # Load event log from disk
 
     if len(browser.value) > 0:
         path = browser.value[0].id
@@ -58,6 +60,47 @@ def _(browser, pd, pm4py):
 
 
 @app.cell(hide_code=True)
+def _(event_log, pd, tcu):
+    # Show the format used by timestamp columns
+
+    _timestamp_columns = [
+        col
+        for col in event_log.columns
+        if (
+            isinstance(event_log[col].dtype, pd.DatetimeTZDtype)
+            or pd.api.types.is_datetime64_dtype(event_log[col])
+        )
+    ]
+
+    _format_results = []
+
+    for _col in _timestamp_columns:
+        _result = tcu.infer_timestamp_format_from_column(event_log[_col])
+
+        _format_results.append({
+            "Timestamp column": _col,
+            "Status": _result["status"],
+            "Format": _result["format"],
+        })
+
+    timestamp_format_summary = pd.DataFrame(_format_results)
+
+    timestamp_format_summary
+    return
+
+
+@app.cell(hide_code=True)
+def _(event_log, mo, tcu):
+    # Show the granularity level of the encoded timestamps in the log, including whether timestamp components and timezone are constant
+    timestamp_component_summary, timestamp_constant_prefixes = tcu.analyze_timestamp_components(event_log)
+    mo.ui.tabs({
+        "Component analysis": timestamp_component_summary,
+        "Constant prefixes": timestamp_constant_prefixes,
+    })
+    return
+
+
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## Time Zone Selection
@@ -69,6 +112,8 @@ def _(mo):
 
     _default_timezone = "UTC" if "UTC" in _common_timezones else _common_timezones[0]
 
+    GRANULARITY_LEVELS = ['year', 'month', 'day', 'hour', 'minute', 'second', 'millisecond', 'sub-millisecond']
+
     timezone_dropdown = mo.ui.dropdown(
         options=_common_timezones,
         value=_default_timezone,
@@ -77,11 +122,20 @@ def _(mo):
         searchable=True,
     )
 
+    granularity_normalization_dropdown = mo.ui.dropdown(
+        options=GRANULARITY_LEVELS,
+        value=None,
+        label="Select granularity level",
+        allow_select_none=True,
+    )
+
     mo.vstack([
         mo.md("Select a time zone to apply to all timestamp columns in the event log and case log:"),
-        mo.hstack([timezone_dropdown], justify="start")
+        mo.hstack([timezone_dropdown], justify="start"),
+        mo.md("(Optional) Select a granularity level to apply to all timestamp columns in the event log and case log:"),
+        mo.hstack([granularity_normalization_dropdown], justify="start")
     ])
-    return (timezone_dropdown,)
+    return granularity_normalization_dropdown, timezone_dropdown
 
 
 @app.cell(hide_code=True)
@@ -89,10 +143,12 @@ def _(
     event_enrichment_code_editor,
     event_enrichment_submit_button,
     event_log_from_disk,
+    granularity_normalization_dropdown,
     pd,
+    tcu,
     timezone_dropdown,
 ):
-    # initialize the event log
+    # Initialize the event log
     event_log = event_log_from_disk
 
     # apply the selected timezone to all timestamp columns
@@ -102,6 +158,33 @@ def _(
         if isinstance(event_log[_col].dtype, pd.DatetimeTZDtype):
             event_log[_col] = event_log[_col].dt.tz_convert(_selected_timezone)
             print('Converting column', _col, 'to timezone', _selected_timezone)
+
+    # apply the selected timestamp granularity to all timestamp columns
+    _target_granularity = granularity_normalization_dropdown.value
+
+    if _target_granularity is not None:
+        if _target_granularity not in tcu._FREQ_ALIASES:
+            print(
+                f"Granularity normalization to '{_target_granularity}' "
+                "is currently not supported."
+            )
+        else:
+            _freq = tcu._FREQ_ALIASES[_target_granularity]
+
+            # apply to all timestamp columns
+            for _col in event_log.columns:
+                if isinstance(event_log[_col].dtype, pd.DatetimeTZDtype) or pd.api.types.is_datetime64_dtype(event_log[_col]):
+                    _original = event_log[_col]
+                    _rounded = _original.dt.round(_freq)
+
+                    _changed = (_rounded != _original).sum()
+
+                    event_log[_col] = _rounded
+
+                    print(
+                        f"Rounded {_changed}/{len(_original)} values in "
+                        f"'{_col}' to the nearest {_target_granularity}"
+                    )
 
     # columns that are filled for every row vs. columns that are not consistently filled
     fully_filled_columns = [ col for col in event_log.columns if event_log[col].notna().all() ]
@@ -141,7 +224,7 @@ def _(
 
 @app.cell(hide_code=True)
 def _(fully_filled_columns, mo):
-    # define mandatory columns to be user selected from all consistent columns
+    # Define mandatory columns to be user selected from all consistent columns
 
     DEFAULT_CASE_ID = "case:concept:name"
     DEFAULT_ACTIVITY = "concept:name"
@@ -246,6 +329,51 @@ def _(
         activity_list,
         activity_stats,
     )
+
+
+@app.cell(hide_code=True)
+def _(CASE_ID_dropdown, COMPLETION_TIME_dropdown, event_log, mo, tcu):
+    # Based on the selected COMPLETION TIME column, check whether events are ordered by completion time within each case and across the log
+    case_ordering_summary, log_ordering_summary = tcu.analyze_event_ordering(
+        event_log, CASE_ID_dropdown.value, COMPLETION_TIME_dropdown.value
+    )
+    mo.ui.tabs({
+        "Case-wise ordering": case_ordering_summary,
+        "Global ordering": log_ordering_summary,
+    })
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    order_events_button = mo.ui.run_button(
+        label="Order all events by completion time"
+    )
+
+    order_events_button
+    return (order_events_button,)
+
+
+@app.cell(hide_code=True)
+def _(COMPLETION_TIME_dropdown, event_log, order_events_button):
+    if order_events_button.value:
+        ordered_event_log = event_log.copy()
+
+        ordered_event_log['original_order'] = range(len(ordered_event_log))
+
+        ordered_event_log = ordered_event_log.sort_values(
+            by=[
+                COMPLETION_TIME_dropdown.value,
+                'original_order'
+            ]
+        ).reset_index(drop=True)
+
+        assert ordered_event_log[
+            COMPLETION_TIME_dropdown.value
+        ].is_monotonic_increasing
+    else:
+        ordered_event_log = event_log
+    return
 
 
 @app.cell(hide_code=True)
