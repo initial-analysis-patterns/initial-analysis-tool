@@ -68,7 +68,7 @@ def _(browser, pd, pm4py):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Temporal Characteristics of the Log
+    ## Temporal Characteristics of the Log Overview
     """)
     return
 
@@ -118,16 +118,6 @@ def _(event_log_from_disk, mo, tcu):
         "Constant prefixes": timestamp_constant_prefixes,
     })
     ])
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Initialize the Event Log
-
-    In this stage, a common time zone and granularity are applied to all timestamp columns in the log; uninformative columns and duplicated events are dropped; and enrichments are applied.
-    """)
     return
 
 
@@ -429,7 +419,7 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## EVENT LOG VIEW
+    ## Event Log View
 
     - use for overview or filter for a specific case, activity, or time period
     """)
@@ -455,7 +445,9 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## ACTIVITY SCHEMA VIEW
+    ## Activity Schemas and Schema Overlaps
+
+    Showing the activity schemas, i.e. the attributes that take at least one non-null value across the log for each activity type. Mandatory attributes are excluded from the list. Schema overlaps are attributes that belong to more than one activity schema.
     """)
     return
 
@@ -524,9 +516,73 @@ def _(mo, partial_schema_usages, schema_usages):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Activity schema
+    ## Case-wise Activity Occurrence
+    """)
+    return
 
-    Select an activity of the log to see its schema, i.e., the set of attributes defined for the activity. You can also see how consistently the attribute is populated, i.e., how many events have a missing value.
+
+@app.cell(hide_code=True)
+def _(ACTIVITY, CASE_ID, event_log, mo, su):
+    # Count the occurrences of each activity type within each case
+    activity_occurrence_counts = su.get_activity_occurrence_counts(event_log, CASE_ID, ACTIVITY)
+    activity_occurrence_summary = su.summarize_activity_occurrence(activity_occurrence_counts)
+
+    # Select an activity type to inspect its occurrence distribution across cases
+    _occurrence_activities = list(activity_occurrence_counts.columns)
+
+    occurrence_activity_dropdown = mo.ui.dropdown(
+        options=_occurrence_activities,
+        value=_occurrence_activities[0] if _occurrence_activities else None,
+        label="Select activity",
+        searchable=True,
+    )
+
+    mo.vstack([
+        mo.md("Select an activity type to see in how many cases it occurs, and how often it occurs within them:"),
+        occurrence_activity_dropdown
+    ])
+    return (
+        activity_occurrence_counts,
+        activity_occurrence_summary,
+        occurrence_activity_dropdown,
+    )
+
+
+@app.cell(hide_code=True)
+def _(
+    activity_occurrence_counts,
+    activity_occurrence_summary,
+    mo,
+    occurrence_activity_dropdown,
+    su,
+):
+    # Show the case coverage per activity type and the occurrence distribution of the selected one
+    activity_occurrence_distribution = su.get_occurrence_distribution(
+        activity_occurrence_counts, occurrence_activity_dropdown.value
+    )
+
+    _total_cases = len(activity_occurrence_counts)
+    _cases_with_activity = (activity_occurrence_counts[occurrence_activity_dropdown.value] > 0).sum()
+
+    mo.ui.tabs({
+        "Occurrence per activity type": activity_occurrence_summary,
+        "Distribution for selected activity": mo.vstack([
+            mo.md(
+                f"'{occurrence_activity_dropdown.value}' occurs in {_cases_with_activity} "
+                f"of {_total_cases} cases ({_cases_with_activity / _total_cases * 100:.2f}%)"
+            ),
+            activity_occurrence_distribution
+        ]),
+    })
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Activity-wise Attribute Filling
+
+    Select an activity type and an attribute from its schema to see how the attribute is populated for the activity type.
     """)
     return
 
@@ -601,70 +657,6 @@ def _(
     mo.ui.tabs({
         "Histogram": mo.vstack([attribute_bin_selector, attribute_histogram]),
         "Events": events_of_selected_activity[MANDATORY_COLUMNS+STANDARD_COLUMNS+_events_extra_columns]
-    })
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Case-wise Activity Occurrence
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(ACTIVITY, CASE_ID, event_log, mo, su):
-    # Count the occurrences of each activity type within each case
-    activity_occurrence_counts = su.get_activity_occurrence_counts(event_log, CASE_ID, ACTIVITY)
-    activity_occurrence_summary = su.summarize_activity_occurrence(activity_occurrence_counts)
-
-    # Select an activity type to inspect its occurrence distribution across cases
-    _occurrence_activities = list(activity_occurrence_counts.columns)
-
-    occurrence_activity_dropdown = mo.ui.dropdown(
-        options=_occurrence_activities,
-        value=_occurrence_activities[0] if _occurrence_activities else None,
-        label="Select activity",
-        searchable=True,
-    )
-
-    mo.vstack([
-        mo.md("Select an activity type to see in how many cases it occurs, and how often it occurs within them:"),
-        occurrence_activity_dropdown
-    ])
-    return (
-        activity_occurrence_counts,
-        activity_occurrence_summary,
-        occurrence_activity_dropdown,
-    )
-
-
-@app.cell(hide_code=True)
-def _(
-    activity_occurrence_counts,
-    activity_occurrence_summary,
-    mo,
-    occurrence_activity_dropdown,
-    su,
-):
-    # Show the case coverage per activity type and the occurrence distribution of the selected one
-    activity_occurrence_distribution = su.get_occurrence_distribution(
-        activity_occurrence_counts, occurrence_activity_dropdown.value
-    )
-
-    _total_cases = len(activity_occurrence_counts)
-    _cases_with_activity = (activity_occurrence_counts[occurrence_activity_dropdown.value] > 0).sum()
-
-    mo.ui.tabs({
-        "Occurrence per activity type": activity_occurrence_summary,
-        "Distribution for selected activity": mo.vstack([
-            mo.md(
-                f"'{occurrence_activity_dropdown.value}' occurs in {_cases_with_activity} "
-                f"of {_total_cases} cases ({_cases_with_activity / _total_cases * 100:.2f}%)"
-            ),
-            activity_occurrence_distribution
-        ]),
     })
     return
 
