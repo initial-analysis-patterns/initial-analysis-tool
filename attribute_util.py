@@ -1,5 +1,6 @@
 import itertools
 
+import numpy as np
 import pandas as pd
 
 
@@ -65,3 +66,108 @@ def get_case_wise_filling(event_log, case_id_column, attribute):
         'Cases': counts.values,
         'Percentage': percentages.values
     })
+
+
+def get_value_distribution(event_log, attribute):
+    # dropna=False keeps missing values in the counts instead of dropping them
+    counts = event_log[attribute].value_counts(dropna=False)
+    counts.index = counts.index.map(lambda value: 'missing' if pd.isna(value) else value)
+    # different missing sentinels (NaN, None, NaT) are counted as one 'missing' value
+    counts = counts.groupby(level=0, sort=False).sum()
+    percent = counts / len(event_log) * 100
+    return pd.DataFrame(
+        [counts.values, percent.values],
+        index=['count', 'percent'],
+        columns=counts.index,
+    )
+
+
+def get_numeric_summary(event_log, attribute):
+    values = event_log[attribute].dropna()
+    return pd.Series({
+        'average': values.mean(),
+        'variance': values.var(),
+        'stdev': values.std(),
+        'median': values.median(),
+    }, name=attribute)
+
+
+def characterize_attribute_values(event_log, attribute):
+    if pd.api.types.is_numeric_dtype(event_log[attribute]):
+        return get_numeric_summary(event_log, attribute).to_frame().T
+
+    return get_value_distribution(event_log, attribute)
+
+
+def get_case_level_monotonic_flags(event_log, case_id_column, completion_time_column, attribute):
+    by_case = event_log.sort_values([case_id_column, completion_time_column])
+
+    def is_monotonic(series):
+        return series.dropna().is_monotonic_increasing
+
+    return by_case.groupby(case_id_column)[attribute].apply(is_monotonic)
+
+
+def is_log_level_monotonic(event_log, attribute):
+    # assumes the log is already globally ordered by completion time
+    return event_log[attribute].dropna().is_monotonic_increasing
+
+
+def count_changes(series):
+    non_null = series.dropna()
+    if non_null.empty:
+        return None  # attribute never populated in this case - excluded from the statistics
+    # comparing against shift() flags the first non-null value as a "change" too (it has no predecessor), so subtract 1 to correct for that
+    return (non_null != non_null.shift()).sum() - 1
+
+
+def get_change_counts_per_case(event_log, case_id_column, completion_time_column, activity_column, activity, attribute):
+    # a stable sort keeps the original row order for events of a case that share a timestamp
+    ordered_log = event_log.sort_values(
+        by=[case_id_column, completion_time_column], kind='stable'
+    )
+    activity_log = ordered_log[ordered_log[activity_column] == activity]
+    counts = activity_log.groupby(case_id_column)[attribute].apply(count_changes)
+    return counts.dropna()
+
+
+def discretize(series, bins):
+    if pd.api.types.is_numeric_dtype(series):
+        return pd.qcut(series, bins, duplicates='drop')
+    return series
+
+
+def entropy(series):
+    probabilities = series.dropna().value_counts(normalize=True)
+    return -(probabilities * np.log2(probabilities)).sum()
+
+
+def mutual_information(x, y):
+    joint = pd.crosstab(x, y, normalize=True)
+    px = joint.sum(axis=1)
+    py = joint.sum(axis=0)
+    mi = 0.0
+    for i in joint.index:
+        for j in joint.columns:
+            p_xy = joint.loc[i, j]
+            if p_xy > 0:
+                mi += p_xy * np.log2(p_xy / (px[i] * py[j]))
+    return mi
+
+
+def normalized_mutual_information(x, y, bins):
+    mask = x.notna() & y.notna()
+    if not mask.any():
+        return None  # no jointly-populated rows
+
+    x_binned = discretize(x[mask], bins)
+    y_binned = discretize(y[mask], bins)
+
+    hx = entropy(x_binned)
+    hy = entropy(y_binned)
+    mi = mutual_information(x_binned, y_binned)
+
+    denom = (hx + hy) / 2
+    nmi = mi / denom if denom > 0 else 0.0
+
+    return hx, hy, mi, nmi

@@ -409,6 +409,7 @@ def _(
         ACTIVITY,
         CASE_FEATURE_COLUMNS,
         CASE_ID,
+        COMPLETION_TIME,
         MANDATORY_COLUMNS,
         STANDARD_COLUMNS,
         activity_list,
@@ -421,7 +422,7 @@ def _(mo):
     mo.md(r"""
     ## Event Log View
 
-    - use for overview or filter for a specific case, activity, or time period
+    Use for overview or filter for a specific case, activity, or time period.
     """)
     return
 
@@ -439,6 +440,22 @@ def _(
         "Event Log": initialized_event_log[[col for col in MANDATORY_COLUMNS+STANDARD_COLUMNS+['folded_data'] if col not in CASE_FEATURE_COLUMNS]],
         "Case Log": case_log
     })
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Concurrent Events Detection
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Transaction Detection
+    """)
     return
 
 
@@ -662,9 +679,52 @@ def _(
 
 
 @app.cell(hide_code=True)
+def _(
+    ACTIVITY,
+    CASE_ID,
+    COMPLETION_TIME,
+    activity_dropdown,
+    attribute_dropdown,
+    au,
+    event_log,
+    mo,
+):
+    # Determine how often the selected attribute changes across the selected activity's events within a case
+    if attribute_dropdown.value is None:
+        attribute_change_frequency = mo.md(
+            f"'{activity_dropdown.value}' has no populated attributes."
+        )
+    else:
+        _change_counts = au.get_change_counts_per_case(
+            event_log, CASE_ID, COMPLETION_TIME, ACTIVITY,
+            activity_dropdown.value, attribute_dropdown.value
+        )
+
+        attribute_change_frequency = mo.md(
+            f"Cases considered ('{attribute_dropdown.value}' populated at least once "
+            f"on '{activity_dropdown.value}'): **{len(_change_counts)}**\n\n"
+            f"Average number of changes per case: **{_change_counts.mean():.4f}**\n\n"
+            f"Variance: **{_change_counts.var():.4f}**"
+        )
+
+    attribute_change_frequency
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Activity-Attribute Association
+    It should be checked whether an attribute recorded for an activity is intrinsically associated with that activity. This is an analysis that requires domain knowledge and cannot be automated.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
     ## Event Enrichment
+    TBD where to position in the notebook
     """)
     return
 
@@ -703,9 +763,9 @@ def _(
     CASE_ID,
     case_enrichment_code_editor,
     case_enrichment_submit_button,
-    initialized_event_log,
+    event_log,
 ):
-    cases = initialized_event_log.groupby(CASE_ID)
+    cases = event_log.groupby(CASE_ID)
     case_log = cases.agg(
         start_time=('time:timestamp','first'),
         end_time=('time:timestamp', 'last'),
@@ -718,6 +778,123 @@ def _(
         exec(case_enrichment_code_editor.value)
         print('done')
     return (case_log,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Analysis of an Attribute in Isolation
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(MANDATORY_COLUMNS, event_log, mo):
+    # Select an attribute to inspect how it is filled across and within cases
+    _selectable_attributes = [
+        col for col in event_log.columns
+        if col not in MANDATORY_COLUMNS and col != 'folded_data'
+    ]
+
+    filling_attribute_dropdown = mo.ui.dropdown(
+        options=_selectable_attributes,
+        value=_selectable_attributes[0] if _selectable_attributes else None,
+        label="Attribute: ",
+        searchable=True,
+    )
+
+    mo.vstack([
+        mo.md("Select an attribute to analyze."),
+        filling_attribute_dropdown
+    ])
+    return (filling_attribute_dropdown,)
+
+
+@app.cell(hide_code=True)
+def _(CASE_ID, au, event_log, filling_attribute_dropdown, mo):
+    # Show the distribution of case-wise filling classes for the selected attribute
+    case_wise_filling_distribution = au.get_case_wise_filling(
+        event_log, CASE_ID, filling_attribute_dropdown.value
+    )
+
+    mo.vstack([
+        mo.md(
+            f"Case-wise distribution of attribute '{filling_attribute_dropdown.value}':"
+        ),
+        case_wise_filling_distribution
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(au, event_log, filling_attribute_dropdown, mo):
+    # Characterize the values of the selected attribute: categorically, or quantitatively if numeric
+
+    attribute_value_characterization = au.characterize_attribute_values(
+        event_log, filling_attribute_dropdown.value
+    )
+
+    mo.vstack([
+        mo.md(
+            f"Value characterization of attribute '{filling_attribute_dropdown.value}':"
+        ),
+        attribute_value_characterization.rename(columns=str)
+    ])
+    return
+
+
+@app.cell(hide_code=True)
+def _(
+    CASE_ID,
+    COMPLETION_TIME,
+    au,
+    checkbox,
+    event_log,
+    filling_attribute_dropdown,
+    mo,
+    pd,
+):
+    # Check whether the selected attribute is monotonically non-decreasing over time
+    _attribute = filling_attribute_dropdown.value
+
+    if not pd.api.types.is_numeric_dtype(event_log[_attribute]):
+        attribute_monotonicity = mo.md(
+            f"'{_attribute}' is not numeric, so monotonicity is not checked."
+        )
+    else:
+        _monotonicity_case_flags = au.get_case_level_monotonic_flags(
+            event_log, CASE_ID, COMPLETION_TIME, _attribute
+        )
+        _violating_cases = _monotonicity_case_flags[~_monotonicity_case_flags].index.tolist()
+
+        if checkbox.value:
+            _log_level = (
+                f"Monotonically increasing over the whole log: "
+                f"**{au.is_log_level_monotonic(event_log, _attribute)}**"
+            )
+        else:
+            _log_level = (
+                "Log-level monotonicity is not checked: the events are not globally "
+                "ordered by completion time. Enable the ordering option during initialization."
+            )
+
+        attribute_monotonicity = mo.md(
+            f"Attribute '{filling_attribute_dropdown.value}' is monotonically increasing within every case: **{_monotonicity_case_flags.all()}**\n\n"
+            f"{_log_level}\n\n"
+            f"Cases where '{_attribute}' is not monotonically increasing "
+            f"({len(_violating_cases)}): {_violating_cases}"
+        )
+
+    attribute_monotonicity
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Attribute Dependencies
+    """)
+    return
 
 
 @app.cell(hide_code=True)
@@ -740,8 +917,15 @@ def _(case_log, mo):
         searchable=True,
     )
 
-    mo.hstack([x_axis_dropdown, y_axis_dropdown], justify="start")
-    return x_axis_dropdown, y_axis_dropdown
+    nmi_bins_slider = mo.ui.slider(
+        start=2, stop=20, value=10, label="Quantile bins for numeric attributes"
+    )
+
+    mo.vstack([
+        mo.hstack([x_axis_dropdown, y_axis_dropdown], justify="start"),
+        nmi_bins_slider
+    ])
+    return nmi_bins_slider, x_axis_dropdown, y_axis_dropdown
 
 
 @app.cell(hide_code=True)
@@ -761,6 +945,43 @@ def _(case_log, px, x_axis_dropdown, y_axis_dropdown):
     )
     case_scatter_fig.update_traces(marker=dict(size=8, opacity=0.7))
     case_scatter_fig
+    return (case_log_reset,)
+
+
+@app.cell(hide_code=True)
+def _(
+    au,
+    case_log_reset,
+    mo,
+    nmi_bins_slider,
+    x_axis_dropdown,
+    y_axis_dropdown,
+):
+    # Assess the statistical dependence between the two selected attributes via normalized mutual information
+    if x_axis_dropdown.value == y_axis_dropdown.value:
+        attribute_dependence = mo.md(f"'{x_axis_dropdown.value}' is compared to itself.")
+    else:
+        _result = au.normalized_mutual_information(
+            case_log_reset[x_axis_dropdown.value],
+            case_log_reset[y_axis_dropdown.value],
+            nmi_bins_slider.value,
+        )
+
+        if _result is None:
+            attribute_dependence = mo.md(
+                f"No rows where both '{x_axis_dropdown.value}' and "
+                f"'{y_axis_dropdown.value}' are populated."
+            )
+        else:
+            _hx, _hy, _mi, _nmi = _result
+            attribute_dependence = mo.md(
+                f"H({x_axis_dropdown.value}) = **{_hx:.4f}** bits\n\n"
+                f"H({y_axis_dropdown.value}) = **{_hy:.4f}** bits\n\n"
+                f"MI({x_axis_dropdown.value}; {y_axis_dropdown.value}) = **{_mi:.4f}** bits\n\n"
+                f"NMI({x_axis_dropdown.value}; {y_axis_dropdown.value}) = **{_nmi:.4f}**"
+            )
+
+    attribute_dependence
     return
 
 
@@ -816,47 +1037,6 @@ def _(mo, pd, redundant_attribute_candidates, redundant_pair_dropdown):
         "Redundant attribute candidate pairs": redundant_pair_overview,
         "Selected mapping": redundant_pair_mapping,
     })
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Case-wise Attribute Filling
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(MANDATORY_COLUMNS, event_log, mo):
-    # Select an attribute to inspect how it is filled across and within cases
-    _selectable_attributes = [
-        col for col in event_log.columns
-        if col not in MANDATORY_COLUMNS and col != 'folded_data'
-    ]
-
-    filling_attribute_dropdown = mo.ui.dropdown(
-        options=_selectable_attributes,
-        value=_selectable_attributes[0] if _selectable_attributes else None,
-        label="Select attribute",
-        searchable=True,
-    )
-
-    mo.vstack([
-        mo.md("Select an attribute to see how it is populated within cases:"),
-        filling_attribute_dropdown
-    ])
-    return (filling_attribute_dropdown,)
-
-
-@app.cell(hide_code=True)
-def _(CASE_ID, au, event_log, filling_attribute_dropdown):
-    # Show the distribution of case-wise filling classes for the selected attribute
-    case_wise_filling_distribution = au.get_case_wise_filling(
-        event_log, CASE_ID, filling_attribute_dropdown.value
-    )
-
-    case_wise_filling_distribution
     return
 
 
