@@ -72,14 +72,14 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(event_log, event_log_from_disk, pd, tcu):
+def _(event_log_from_disk, mo, pd, tcu):
     # Show the format used by all timestamp columns
 
     _timestamp_columns = [
         col
-        for col in event_log.columns
+        for col in event_log_from_disk.columns
         if (
-            isinstance(event_log[col].dtype, pd.DatetimeTZDtype)
+            isinstance(event_log_from_disk[col].dtype, pd.DatetimeTZDtype)
             or pd.api.types.is_datetime64_dtype(event_log_from_disk[col])
         )
     ]
@@ -97,7 +97,10 @@ def _(event_log, event_log_from_disk, pd, tcu):
 
     timestamp_format_summary = pd.DataFrame(_format_results)
 
-    timestamp_format_summary
+    mo.vstack([
+        mo.md("Showing the format of each timestamp column, if unambiguously detected from the data recorded therein:"),
+        timestamp_format_summary
+    ])
     return
 
 
@@ -105,10 +108,14 @@ def _(event_log, event_log_from_disk, pd, tcu):
 def _(event_log_from_disk, mo, tcu):
     # Show the granularity level of the encoded timestamps in the log, including whether timestamp components and timezone are constant
     timestamp_component_summary, timestamp_constant_prefixes = tcu.analyze_timestamp_components(event_log_from_disk)
-    mo.ui.tabs({
+
+    mo.vstack([
+        mo.md("Showing the precision of each timestamp column and whether any timestamp elements are constant, based on the data recorded therein:"),
+        mo.ui.tabs({
         "Component analysis": timestamp_component_summary,
         "Constant prefixes": timestamp_constant_prefixes,
     })
+    ])
     return
 
 
@@ -702,7 +709,7 @@ def _(case_log, px, x_axis_dropdown, y_axis_dropdown):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Attributes
+    ## Redundant Attributes
     """)
     return
 
@@ -751,6 +758,47 @@ def _(mo, pd, redundant_attribute_candidates, redundant_pair_dropdown):
         "Redundant attribute candidate pairs": redundant_pair_overview,
         "Selected mapping": redundant_pair_mapping,
     })
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Case-wise Attribute Filling
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(MANDATORY_COLUMNS, event_log, mo):
+    # Select an attribute to inspect how it is filled across and within cases
+    _selectable_attributes = [
+        col for col in event_log.columns
+        if col not in MANDATORY_COLUMNS and col != 'folded_data'
+    ]
+
+    filling_attribute_dropdown = mo.ui.dropdown(
+        options=_selectable_attributes,
+        value=_selectable_attributes[0] if _selectable_attributes else None,
+        label="Select attribute",
+        searchable=True,
+    )
+
+    mo.vstack([
+        mo.md("Select an attribute to see how it is populated within cases:"),
+        filling_attribute_dropdown
+    ])
+    return (filling_attribute_dropdown,)
+
+
+@app.cell(hide_code=True)
+def _(CASE_ID, au, event_log, filling_attribute_dropdown):
+    # Show the distribution of case-wise filling classes for the selected attribute
+    case_wise_filling_distribution = au.get_case_wise_filling(
+        event_log, CASE_ID, filling_attribute_dropdown.value
+    )
+
+    case_wise_filling_distribution
     return
 
 
