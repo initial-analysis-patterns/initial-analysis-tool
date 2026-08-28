@@ -1,30 +1,38 @@
 import pandas as pd
 
 
-def get_duplicate_event_mask(event_log, case_id_column, comparison_columns=None, keep=False):
+def find_duplicate_events(event_log, comparison_columns=None):
+    return event_log[
+        event_log.duplicated(subset=comparison_columns, keep=False)
+    ]
+
+
+def remove_duplicate_events(event_log, comparison_columns=None):
+    return event_log[
+        ~event_log.duplicated(subset=comparison_columns, keep='first')
+    ]
+
+
+def summarize_duplicate_events(event_log, comparison_columns=None):
     if comparison_columns is None:
-        comparison_columns = [col for col in event_log.columns if col != case_id_column]
+        comparison_columns = event_log.columns.tolist()
 
-    return event_log.groupby(case_id_column, sort=False, group_keys=False).apply(
-        lambda trace: trace.duplicated(subset=comparison_columns, keep=keep)
+    duplicate_events = find_duplicate_events(event_log, comparison_columns)
+
+    if duplicate_events.empty:
+        kept_instances = duplicate_events.copy()
+        kept_instances['Occurrences'] = pd.Series(dtype='int64')
+        kept_instances['Removed'] = pd.Series(dtype='int64')
+        return kept_instances
+
+    kept_instances = duplicate_events.assign(
+        Occurrences=duplicate_events.groupby(
+            comparison_columns, dropna=False, sort=False
+        )[comparison_columns[0]].transform('size')
     )
-
-
-def find_duplicate_events(event_log, case_id_column, comparison_columns=None):
-    return event_log[
-        get_duplicate_event_mask(event_log, case_id_column, comparison_columns, keep=False)
+    kept_instances = kept_instances[
+        ~kept_instances.duplicated(subset=comparison_columns, keep='first')
     ]
+    kept_instances['Removed'] = kept_instances['Occurrences'] - 1
 
-
-def remove_duplicate_events(event_log, case_id_column, comparison_columns=None):
-    return event_log[
-        ~get_duplicate_event_mask(event_log, case_id_column, comparison_columns, keep='first')
-    ]
-
-
-def get_duplicate_activities_by_case(duplicate_events, case_id_column, activity_column):
-    return (
-        duplicate_events.groupby(case_id_column)[activity_column]
-        .apply(lambda names: sorted(set(names)))
-        .reset_index(name='duplicated_activities')
-    )
+    return kept_instances
