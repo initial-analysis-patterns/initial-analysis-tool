@@ -38,3 +38,30 @@ def find_redundant_attribute_pairs(event_log, columns=None):
             })
 
     return pd.DataFrame(redundant_pairs)
+
+
+FILLING_CLASSES = ['missing', 'populated once', 'populated multiple times (same value)', 'populated multiple times (different values)']
+
+
+def classify_case(values):
+    non_null = values.dropna()
+    if len(non_null) == 0:
+        return 'missing'
+    if len(non_null) == 1:
+        return 'populated once'
+    if non_null.nunique() == 1:
+        return 'populated multiple times (same value)'
+    return 'populated multiple times (different values)'
+
+
+def get_case_wise_filling(event_log, case_id_column, attribute):
+    case_classification = event_log.groupby(case_id_column)[attribute].apply(classify_case)
+
+    counts = case_classification.value_counts().reindex(FILLING_CLASSES, fill_value=0)
+    percentages = (counts / len(case_classification) * 100).round(2)
+
+    return pd.DataFrame({
+        'Filling class': FILLING_CLASSES,
+        'Cases': counts.values,
+        'Percentage': percentages.values
+    })
