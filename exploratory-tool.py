@@ -72,7 +72,7 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(event_log, pd, tcu):
+def _(event_log, event_log_from_disk, pd, tcu):
     # Show the format used by all timestamp columns
 
     _timestamp_columns = [
@@ -80,14 +80,14 @@ def _(event_log, pd, tcu):
         for col in event_log.columns
         if (
             isinstance(event_log[col].dtype, pd.DatetimeTZDtype)
-            or pd.api.types.is_datetime64_dtype(event_log[col])
+            or pd.api.types.is_datetime64_dtype(event_log_from_disk[col])
         )
     ]
 
     _format_results = []
 
     for _col in _timestamp_columns:
-        _result = tcu.infer_timestamp_format_from_column(event_log[_col])
+        _result = tcu.infer_timestamp_format_from_column(event_log_from_disk[_col])
 
         _format_results.append({
             "Timestamp column": _col,
@@ -102,9 +102,9 @@ def _(event_log, pd, tcu):
 
 
 @app.cell(hide_code=True)
-def _(event_log, mo, tcu):
+def _(event_log_from_disk, mo, tcu):
     # Show the granularity level of the encoded timestamps in the log, including whether timestamp components and timezone are constant
-    timestamp_component_summary, timestamp_constant_prefixes = tcu.analyze_timestamp_components(event_log)
+    timestamp_component_summary, timestamp_constant_prefixes = tcu.analyze_timestamp_components(event_log_from_disk)
     mo.ui.tabs({
         "Component analysis": timestamp_component_summary,
         "Constant prefixes": timestamp_constant_prefixes,
@@ -117,13 +117,25 @@ def _(mo):
     mo.md(r"""
     ## Initialize the Event Log
 
-    In this stage, a common time zone and granularity are applied to all timestamp columns in the log; uninformative columns are dropped; and enrichments are applied.
+    In this stage, a common time zone and granularity are applied to all timestamp columns in the log; uninformative columns and duplicated events are dropped; and enrichments are applied.
     """)
     return
 
 
 @app.cell(hide_code=True)
-def _(mo):
+def _(event_log_from_disk, mo):
+    # identify columns that are filled for every row
+    fully_filled_columns = [ col for col in event_log_from_disk.columns if event_log_from_disk[col].notna().all() ]
+
+    _constant_columns = [ col for col in fully_filled_columns if event_log_from_disk[col].nunique() <= 1]
+    fully_filled_columns = [ col for col in fully_filled_columns if col not in _constant_columns ]
+
+    checkbox = mo.ui.checkbox(label="Enforce global ordering of the event log by completion time")
+    return checkbox, fully_filled_columns
+
+
+@app.cell(hide_code=True)
+def _(checkbox, mo):
     import pytz
     from datetime import datetime
 
@@ -149,21 +161,68 @@ def _(mo):
     )
 
     mo.vstack([
+        mo.md("## Time-related Log Initialization Options"),
         mo.md("Select a time zone to apply to all timestamp columns in the event log and case log:"),
         mo.hstack([timezone_dropdown], justify="start"),
         mo.md("(Optional) Select a granularity level to apply to all timestamp columns in the event log and case log:"),
-        mo.hstack([granularity_normalization_dropdown], justify="start")
+        mo.hstack([granularity_normalization_dropdown], justify="start"),
+        checkbox
     ])
     return granularity_normalization_dropdown, timezone_dropdown
 
 
 @app.cell(hide_code=True)
+def _(fully_filled_columns, mo):
+    # Define mandatory columns to be user selected from all consistent columns
+
+    DEFAULT_CASE_ID = "case:concept:name"
+    DEFAULT_ACTIVITY = "concept:name"
+    DEFAULT_COMPLETION_TIME = "time:timestamp"
+
+    CASE_ID_dropdown = mo.ui.dropdown(
+        options=fully_filled_columns,
+        value=DEFAULT_CASE_ID if DEFAULT_CASE_ID in fully_filled_columns else fully_filled_columns[0],
+        label="CASE ID column",
+        allow_select_none=False,
+        searchable=True,
+    )
+
+    COMPLETION_TIME_dropdown = mo.ui.dropdown(
+        options=fully_filled_columns,
+        value=DEFAULT_COMPLETION_TIME if DEFAULT_COMPLETION_TIME in fully_filled_columns else fully_filled_columns[1],
+        label="COMPLETION TIME column",
+        allow_select_none=False,
+        searchable=True,
+    )
+
+    ACTIVITY_dropdown = mo.ui.dropdown(
+        options=fully_filled_columns,
+        value=DEFAULT_ACTIVITY if DEFAULT_ACTIVITY in fully_filled_columns else fully_filled_columns[2],
+        label="ACTIVITY column",
+        allow_select_none=False,
+        searchable=True,
+    )
+
+    mo.vstack([
+        mo.md("## Mandatory Attribute Specification"),
+        mo.md("Select mandatory attributes from attributes that are fully filled:"),
+        mo.hstack([CASE_ID_dropdown, COMPLETION_TIME_dropdown, ACTIVITY_dropdown])
+    ])
+    return ACTIVITY_dropdown, CASE_ID_dropdown, COMPLETION_TIME_dropdown
+
+
+@app.cell(hide_code=True)
 def _(
+    CASE_ID_dropdown,
+    COMPLETION_TIME_dropdown,
     au,
+    checkbox,
+    dqu,
     event_enrichment_code_editor,
     event_enrichment_submit_button,
     event_log_from_disk,
     granularity_normalization_dropdown,
+    mo,
     pd,
     tcu,
     timezone_dropdown,
@@ -207,17 +266,17 @@ def _(
                     )
 
     # columns that are filled for every row vs. columns that are not consistently filled
-    fully_filled_columns = [ col for col in event_log.columns if event_log[col].notna().all() ]
-    _inconsistent_columns = [ col for col in event_log.columns if col not in fully_filled_columns ]
+    _fully_filled_columns = [ col for col in event_log.columns if event_log[col].notna().all() ]
+    _inconsistent_columns = [ col for col in event_log.columns if col not in _fully_filled_columns ]
 
     # from the fully filled columns, drop those that only ever take a single value
-    _constant_columns = [ col for col in fully_filled_columns if event_log[col].nunique() <= 1 ]
+    _constant_columns = [ col for col in _fully_filled_columns if event_log[col].nunique() <= 1 ]
     for _col in _constant_columns:
         _values = event_log[_col].unique()
         _value = _values[0] if len(_values) > 0 else None
         print(f"Dropping constant column '{_col}' with value: {_value}")
     event_log = event_log.drop(columns=_constant_columns)
-    fully_filled_columns = [ col for col in fully_filled_columns if col not in _constant_columns ]
+    #fully_filled_columns = [ col for col in fully_filled_columns if col not in _constant_columns ]
 
     # from the inconsistently filled columns, drop those that are completely empty
     _empty_columns = [ col for col in _inconsistent_columns if event_log[col].notna().sum() == 0 ]
@@ -234,6 +293,38 @@ def _(
     # find attribute pairs that encode the same information
     redundant_attribute_candidates = au.find_redundant_attribute_pairs(event_log)
 
+    # check for and remove events that are exact duplicates of another event
+    duplicate_event_instances = dqu.summarize_duplicate_events(event_log)
+
+    if not duplicate_event_instances.empty:
+        _events_before = len(event_log)
+        event_log = dqu.remove_duplicate_events(event_log)
+        print(
+            f"Removed {_events_before - len(event_log)} duplicate events "
+            f"in {len(duplicate_event_instances)} groups of identical events"
+        )
+
+    # Based on the selected COMPLETION TIME column, check whether events are ordered by completion time within each case and across the log
+    case_ordering_summary, log_ordering_summary = tcu.analyze_event_ordering(
+        event_log, CASE_ID_dropdown.value, COMPLETION_TIME_dropdown.value
+    )
+
+    # Based on whether the checkbox was checked, order the event log
+    if checkbox.value:
+        event_log['original_order'] = range(len(event_log))
+
+        event_log = event_log.sort_values(
+            by=[
+                COMPLETION_TIME_dropdown.value,
+                'original_order'
+            ]
+        ).reset_index(drop=True)
+
+        assert event_log[
+            COMPLETION_TIME_dropdown.value
+        ].is_monotonic_increasing
+        print("All events in the log are now globally ordered.")
+
     # add folding of inconsistent columns
     def fold_data(event):
         # activity = event[ACTIVITY]
@@ -242,46 +333,18 @@ def _(
         return dict if dict else None
 
     event_log['folded_data'] = event_log.apply(fold_data, axis=1)
-    return event_log, fully_filled_columns, redundant_attribute_candidates
 
-
-@app.cell(hide_code=True)
-def _(fully_filled_columns, mo):
-    # Define mandatory columns to be user selected from all consistent columns
-
-    DEFAULT_CASE_ID = "case:concept:name"
-    DEFAULT_ACTIVITY = "concept:name"
-    DEFAULT_COMPLETION_TIME = "time:timestamp"
-
-    CASE_ID_dropdown = mo.ui.dropdown(
-        options=fully_filled_columns,
-        value=DEFAULT_CASE_ID if DEFAULT_CASE_ID in fully_filled_columns else fully_filled_columns[0],
-        label="CASE ID column",
-        allow_select_none=False,
-        searchable=True,
-    )
-
-    COMPLETION_TIME_dropdown = mo.ui.dropdown(
-        options=fully_filled_columns,
-        value=DEFAULT_COMPLETION_TIME if DEFAULT_COMPLETION_TIME in fully_filled_columns else fully_filled_columns[1],
-        label="COMPLETION TIME column",
-        allow_select_none=False,
-        searchable=True,
-    )
-
-    ACTIVITY_dropdown = mo.ui.dropdown(
-        options=fully_filled_columns,
-        value=DEFAULT_ACTIVITY if DEFAULT_ACTIVITY in fully_filled_columns else fully_filled_columns[2],
-        label="ACTIVITY column",
-        allow_select_none=False,
-        searchable=True,
-    )
-
+    # Show one kept instance per group of duplicate events
     mo.vstack([
-        mo.md("Select mandatory attributes from attributes that are fully filled:"),
-        mo.hstack([CASE_ID_dropdown, COMPLETION_TIME_dropdown, ACTIVITY_dropdown])
+        mo.md("The following events had duplicates that have been removed, retaining only one:"),
+        duplicate_event_instances,  
+        #mo.md("Assessment of the log ordering before reordering was applied:"),
+        #mo.ui.tabs({
+        #    "Case-wise ordering": case_ordering_summary,
+        #    "Global ordering": log_ordering_summary,
+        #})
     ])
-    return ACTIVITY_dropdown, CASE_ID_dropdown, COMPLETION_TIME_dropdown
+    return event_log, redundant_attribute_candidates
 
 
 @app.cell(hide_code=True)
@@ -352,109 +415,6 @@ def _(
         activity_list,
         activity_stats,
     )
-
-
-@app.cell(hide_code=True)
-def _(ACTIVITY_dropdown, CASE_ID_dropdown, dqu, event_log, mo, pd):
-    # Based on the selected CASE ID column, check for and remove events that have an identical counterpart within the same case
-    _comparison_columns = [
-        col for col in event_log.columns
-        if col not in (CASE_ID_dropdown.value, 'folded_data')
-    ]
-
-    duplicate_events = dqu.find_duplicate_events(
-        event_log, CASE_ID_dropdown.value, _comparison_columns
-    )
-
-    deduplicated_event_log = dqu.remove_duplicate_events(
-        event_log, CASE_ID_dropdown.value, _comparison_columns
-    )
-
-    duplicate_summary = pd.DataFrame({
-        'Events before': [len(event_log)],
-        'Duplicate events': [len(duplicate_events)],
-        'Cases affected': [duplicate_events[CASE_ID_dropdown.value].nunique()],
-        'Events after': [len(deduplicated_event_log)],
-    })
-
-    if duplicate_events.empty:
-        duplicate_activities_by_case = pd.DataFrame(
-            columns=[CASE_ID_dropdown.value, 'duplicated_activities']
-        )
-    else:
-        duplicate_activities_by_case = dqu.get_duplicate_activities_by_case(
-            duplicate_events, CASE_ID_dropdown.value, ACTIVITY_dropdown.value
-        )
-
-    mo.ui.tabs({
-        "Summary of Duplicate Events": duplicate_summary
-    })
-    return (deduplicated_event_log,)
-
-
-@app.cell(hide_code=True)
-def _(
-    CASE_ID_dropdown,
-    COMPLETION_TIME_dropdown,
-    deduplicated_event_log,
-    mo,
-    tcu,
-):
-    # Based on the selected COMPLETION TIME column, check whether events are ordered by completion time within each case and across the log
-    case_ordering_summary, log_ordering_summary = tcu.analyze_event_ordering(
-        deduplicated_event_log, CASE_ID_dropdown.value, COMPLETION_TIME_dropdown.value
-    )
-    mo.ui.tabs({
-        "Case-wise ordering": case_ordering_summary,
-        "Global ordering": log_ordering_summary,
-    })
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    order_events_button = mo.ui.run_button(
-        label="Order all events by completion time"
-    )
-
-    mo.vstack([
-        mo.md(r"""Order Events in the Log"""),
-        order_events_button
-    ])
-    return (order_events_button,)
-
-
-@app.cell(hide_code=True)
-def _(
-    COMPLETION_TIME_dropdown,
-    deduplicated_event_log,
-    event_log,
-    order_events_button,
-):
-    if order_events_button.value:
-        ordered_event_log = deduplicated_event_log.copy()
-
-        ordered_event_log['original_order'] = range(len(ordered_event_log))
-
-        ordered_event_log = ordered_event_log.sort_values(
-            by=[
-                COMPLETION_TIME_dropdown.value,
-                'original_order'
-            ]
-        ).reset_index(drop=True)
-
-        assert ordered_event_log[
-            COMPLETION_TIME_dropdown.value
-        ].is_monotonic_increasing
-    else:
-        ordered_event_log = event_log
-    return (ordered_event_log,)
-
-
-@app.cell(hide_code=True)
-def _(ordered_event_log):
-    initialized_event_log = ordered_event_log
-    return (initialized_event_log,)
 
 
 @app.cell(hide_code=True)
