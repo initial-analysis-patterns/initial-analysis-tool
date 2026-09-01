@@ -236,3 +236,63 @@ def analyze_event_ordering(event_log, case_id_column, completion_time_column):
         'Globally ordered': [log_ordered]
     })
     return case_ordering_summary, log_ordering_summary
+
+
+def get_case_time_bounds(event_log, case_id_column, completion_time_column):
+    return event_log.groupby(case_id_column)[completion_time_column].agg(['min', 'max'])
+
+
+def get_end_time_of_nth_case(case_bounds, case_count):
+    # the earliest time by which the given number of cases has ended
+    ends = case_bounds['max'].sort_values()
+    if ends.empty:
+        return None
+    return ends.iloc[min(case_count, len(ends)) - 1]
+
+
+def filter_cases_within_window(event_log, case_id_column, completion_time_column, window_start, window_end):
+    case_bounds = get_case_time_bounds(event_log, case_id_column, completion_time_column)
+
+    selected_cases = case_bounds[
+        (case_bounds['min'] >= window_start) & (case_bounds['max'] <= window_end)
+    ].index
+
+    return event_log[event_log[case_id_column].isin(selected_cases)]
+
+
+HUMAN_FORMAT_TOKENS = {
+    '%Y': 'YYYY',
+    '%y': 'YY',
+    '%m': 'MM',
+    '%d': 'DD',
+    '%H': 'HH',
+    '%M': 'mm',
+    '%S': 'ss',
+    '%f': 'ffffff',
+    '%z': '+HHMM',
+    '%Z': 'TZ',
+    '%b': 'MMM',
+    '%B': 'MMMM',
+    '%p': 'AM/PM',
+}
+
+
+def format_to_human(format_string):
+    if not format_string:
+        return None
+
+    human_formats = []
+    for candidate in format_string.split(', '):
+        for directive, token in HUMAN_FORMAT_TOKENS.items():
+            candidate = candidate.replace(directive, token)
+        human_formats.append(candidate)
+
+    return ', '.join(human_formats)
+
+
+def get_example_timestamp(series, format_string):
+    values = series.dropna()
+    if values.empty or not format_string:
+        return None
+
+    return values.iloc[0].strftime(format_string.split(', ')[0])

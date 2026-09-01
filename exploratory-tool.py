@@ -20,16 +20,17 @@ def _():
     import altair as alt
     alt.data_transformers.enable("vegafusion")
     import plotly.express as px
+    from pathlib import Path
     import importlib
     import temporal_characteristics_util as tcu
-    importlib.reload(tcu)
+    tcu = importlib.reload(tcu)
     import attribute_util as au
-    importlib.reload(au)
+    au = importlib.reload(au)
     import data_quality_util as dqu
-    importlib.reload(dqu)
+    dqu = importlib.reload(dqu)
     import structure_util as su
-    importlib.reload(su)
-    return au, dqu, mo, pd, pm4py, px, su, tcu
+    su = importlib.reload(su)
+    return Path, au, dqu, mo, pd, pm4py, px, tcu
 
 
 @app.cell(hide_code=True)
@@ -41,9 +42,9 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(mo):
+def _(Path, mo):
     #| slide: continue
-    browser = mo.ui.file_browser(filetypes=['.csv', '.xes'], multiple=False)
+    browser = mo.ui.file_browser(initial_path=Path.cwd(), filetypes=['.csv', '.xes'], multiple=False)
     browser
     return (browser,)
 
@@ -76,7 +77,6 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(event_log_from_disk, mo, pd, tcu):
     # Show the format used by all timestamp columns
-
     _timestamp_columns = [
         col
         for col in event_log_from_disk.columns
@@ -94,7 +94,9 @@ def _(event_log_from_disk, mo, pd, tcu):
         _format_results.append({
             "Timestamp column": _col,
             "Status": _result["status"],
-            "Format": _result["format"],
+            "Format": tcu.format_to_human(_result["format"]),
+            "Example": tcu.get_example_timestamp(event_log_from_disk[_col], _result["format"]),
+            "Pattern": _result["format"],
         })
 
     timestamp_format_summary = pd.DataFrame(_format_results)
@@ -214,7 +216,53 @@ def _(fully_filled_columns, mo):
 def _(
     CASE_ID_dropdown,
     COMPLETION_TIME_dropdown,
+    event_log_from_disk,
+    mo,
+    pd,
+    tcu,
+):
+    # Select a time frame; only cases that start and end within it are included in the event log
+    _case_bounds = tcu.get_case_time_bounds(
+        event_log_from_disk, CASE_ID_dropdown.value, COMPLETION_TIME_dropdown.value
+    )
+
+    CASE_WINDOW_START = _case_bounds['min'].min()
+    _last_timestamp = _case_bounds['max'].max()
+
+    # a day-resolution slider unless the log spans less than two days
+    CASE_WINDOW_UNIT = 'D' if (_last_timestamp - CASE_WINDOW_START) >= pd.Timedelta(days=2) else 'h'
+    _unit_length = pd.Timedelta(1, CASE_WINDOW_UNIT)
+
+    DEFAULT_CASE_COUNT = 100
+    _default_end = tcu.get_end_time_of_nth_case(_case_bounds, DEFAULT_CASE_COUNT)
+
+    case_window_slider = mo.ui.range_slider(
+        start=0,
+        stop=int((_last_timestamp - CASE_WINDOW_START) / _unit_length) + 1,
+        step=1,
+        value=[0, int((_default_end - CASE_WINDOW_START) / _unit_length) + 1],
+        label=f"Time frame in {'days' if CASE_WINDOW_UNIT == 'D' else 'hours'} after {CASE_WINDOW_START}",
+        full_width=True,
+    )
+
+    mo.vstack([
+        mo.md("## Sampling of Cases for Exploratory Analysis"),
+        mo.md("Select a time frame. Only cases that both start and end within it are "
+            f"included for analysis. The initial selection covers the first {DEFAULT_CASE_COUNT} cases."
+        ),
+        case_window_slider
+    ])
+    return CASE_WINDOW_START, CASE_WINDOW_UNIT, case_window_slider
+
+
+@app.cell(hide_code=True)
+def _(
+    CASE_ID_dropdown,
+    CASE_WINDOW_START,
+    CASE_WINDOW_UNIT,
+    COMPLETION_TIME_dropdown,
     au,
+    case_window_slider,
     checkbox,
     dqu,
     event_enrichment_code_editor,
@@ -229,22 +277,23 @@ def _(
     # Initialize the event log
     event_log = event_log_from_disk
 
+    _messages = []
+
     # apply the selected timezone to all timestamp columns
     _selected_timezone = timezone_dropdown.value
 
     for _col in event_log.columns:
         if isinstance(event_log[_col].dtype, pd.DatetimeTZDtype):
             event_log[_col] = event_log[_col].dt.tz_convert(_selected_timezone)
-            print('Converting column', _col, 'to timezone', _selected_timezone)
+            _messages.append(f"Converted column '{_col}' to timezone {_selected_timezone}")
 
     # apply the selected timestamp granularity to all timestamp columns
     _target_granularity = granularity_normalization_dropdown.value
 
     if _target_granularity is not None:
         if _target_granularity not in tcu._FREQ_ALIASES:
-            print(
-                f"Granularity normalization to '{_target_granularity}' "
-                "is currently not supported."
+            _messages.append(
+                f"Granularity normalization to '{_target_granularity}' is currently not supported."
             )
         else:
             _freq = tcu._FREQ_ALIASES[_target_granularity]
@@ -259,10 +308,27 @@ def _(
 
                     event_log[_col] = _rounded
 
-                    print(
+                    _messages.append(
                         f"Rounded {_changed}/{len(_original)} values in "
                         f"'{_col}' to the nearest {_target_granularity}"
                     )
+
+    # keep only the cases that start and end within the selected time frame
+    _window_start = CASE_WINDOW_START + pd.Timedelta(case_window_slider.value[0], CASE_WINDOW_UNIT)
+    _window_end = CASE_WINDOW_START + pd.Timedelta(case_window_slider.value[1], CASE_WINDOW_UNIT)
+
+    _cases_before = event_log[CASE_ID_dropdown.value].nunique()
+
+    event_log = tcu.filter_cases_within_window(
+        event_log, CASE_ID_dropdown.value, COMPLETION_TIME_dropdown.value,
+        _window_start, _window_end
+    )
+
+    _messages.append(
+        f"Time frame {_window_start} to {_window_end}: kept "
+        f"{event_log[CASE_ID_dropdown.value].nunique()} of {_cases_before} cases "
+        f"({len(event_log)} events)"
+    )
 
     # columns that are filled for every row vs. columns that are not consistently filled
     _fully_filled_columns = [ col for col in event_log.columns if event_log[col].notna().all() ]
@@ -273,21 +339,20 @@ def _(
     for _col in _constant_columns:
         _values = event_log[_col].unique()
         _value = _values[0] if len(_values) > 0 else None
-        print(f"Dropping constant column '{_col}' with value: {_value}")
+        _messages.append(f"Dropped constant column '{_col}' with value: {_value}")
     event_log = event_log.drop(columns=_constant_columns)
-    #fully_filled_columns = [ col for col in fully_filled_columns if col not in _constant_columns ]
 
     # from the inconsistently filled columns, drop those that are completely empty
     _empty_columns = [ col for col in _inconsistent_columns if event_log[col].notna().sum() == 0 ]
     for _col in _empty_columns:
-        print(f"Dropping empty column '{_col}'")
+        _messages.append(f"Dropped empty column '{_col}'")
     event_log = event_log.drop(columns=_empty_columns)
     _inconsistent_columns = [ col for col in _inconsistent_columns if col not in _empty_columns ]
 
     # add manual enrichments here
     if event_enrichment_submit_button.value:
         exec(event_enrichment_code_editor.value)
-        print('done')
+        _messages.append("Applied the manual event enrichment")
 
     # find attribute pairs that encode the same information
     redundant_attribute_candidates = au.find_redundant_attribute_pairs(event_log)
@@ -298,7 +363,7 @@ def _(
     if not duplicate_event_instances.empty:
         _events_before = len(event_log)
         event_log = dqu.remove_duplicate_events(event_log)
-        print(
+        _messages.append(
             f"Removed {_events_before - len(event_log)} duplicate events "
             f"in {len(duplicate_event_instances)} groups of identical events"
         )
@@ -322,7 +387,7 @@ def _(
         assert event_log[
             COMPLETION_TIME_dropdown.value
         ].is_monotonic_increasing
-        print("All events in the log are now globally ordered.")
+        _messages.append("All events in the log are now globally ordered.")
 
     # add folding of inconsistent columns
     def fold_data(event):
@@ -333,16 +398,16 @@ def _(
 
     event_log['folded_data'] = event_log.apply(fold_data, axis=1)
 
-    # Show one kept instance per group of duplicate events
-    mo.vstack([
-        mo.md("The following events had duplicates that have been removed, retaining only one:"),
-        duplicate_event_instances,  
-        #mo.md("Assessment of the log ordering before reordering was applied:"),
-        #mo.ui.tabs({
-        #    "Case-wise ordering": case_ordering_summary,
-        #    "Global ordering": log_ordering_summary,
-        #})
-    ])
+    # report what the initialization did, and show one kept instance per group of duplicate events
+    _output = [mo.md("\n".join(f"- {_message}" for _message in _messages))]
+
+    if duplicate_event_instances.empty:
+        _output.append(mo.md("No duplicated events were found in the log."))
+    else:
+        _output.append(mo.md("The following events had duplicates that have been removed, retaining only one:"))
+        _output.append(duplicate_event_instances)
+
+    mo.vstack(_output)
     return event_log, redundant_attribute_candidates
 
 
@@ -353,6 +418,7 @@ def _(
     COMPLETION_TIME_dropdown,
     event_log,
     fully_filled_columns,
+    mo,
     pd,
 ):
     # Based on selected mandatory attributes, classify each attribute as mandatory, standard, or else
@@ -404,7 +470,10 @@ def _(
         and _case_groups[col].apply(lambda s: s.dropna().nunique()).max() <= 1
     ]
 
-    print("Case feature columns (unique value per case, possibly NaN):", CASE_FEATURE_COLUMNS)
+    mo.vstack([
+        mo.md("Case feature columns (unique value per case, possibly NaN):"),
+        mo.md(", ".join(f"`{col}`" for col in CASE_FEATURE_COLUMNS) or "_none_")
+    ])
     return (
         ACTIVITY,
         CASE_FEATURE_COLUMNS,
@@ -422,7 +491,7 @@ def _(mo):
     mo.md(r"""
     ## Event Log View
 
-    Use for overview or filter for a specific case, activity, or time period.
+    Use for overview or filter for a specific case, activity, or time period. Switch between event log and case table view.
     """)
     return
 
@@ -433,11 +502,11 @@ def _(
     MANDATORY_COLUMNS,
     STANDARD_COLUMNS,
     case_log,
-    initialized_event_log,
+    event_log,
     mo,
 ):
     mo.ui.tabs({
-        "Event Log": initialized_event_log[[col for col in MANDATORY_COLUMNS+STANDARD_COLUMNS+['folded_data'] if col not in CASE_FEATURE_COLUMNS]],
+        "Event Log": event_log[[col for col in MANDATORY_COLUMNS+STANDARD_COLUMNS+['folded_data'] if col not in CASE_FEATURE_COLUMNS]],
         "Case Log": case_log
     })
     return
@@ -446,23 +515,7 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Concurrent Events Detection
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Transaction Detection
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Activity Schemas and Schema Overlaps
+    ## Activity Schemas View
 
     Showing the activity schemas, i.e. the attributes that take at least one non-null value across the log for each activity type. Mandatory attributes are excluded from the list. Schema overlaps are attributes that belong to more than one activity schema.
     """)
@@ -526,70 +579,6 @@ def _(mo, partial_schema_usages, schema_usages):
     mo.ui.tabs({
         "Activity Schemas": schema_usages[['incidence', 'extra_schema_keys', 'missing_values']],
         "Schema Overlaps": partial_schema_usages[(partial_schema_usages != 0).any(axis=1)],
-    })
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Case-wise Activity Occurrence
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(ACTIVITY, CASE_ID, event_log, mo, su):
-    # Count the occurrences of each activity type within each case
-    activity_occurrence_counts = su.get_activity_occurrence_counts(event_log, CASE_ID, ACTIVITY)
-    activity_occurrence_summary = su.summarize_activity_occurrence(activity_occurrence_counts)
-
-    # Select an activity type to inspect its occurrence distribution across cases
-    _occurrence_activities = list(activity_occurrence_counts.columns)
-
-    occurrence_activity_dropdown = mo.ui.dropdown(
-        options=_occurrence_activities,
-        value=_occurrence_activities[0] if _occurrence_activities else None,
-        label="Select activity",
-        searchable=True,
-    )
-
-    mo.vstack([
-        mo.md("Select an activity type to see in how many cases it occurs, and how often it occurs within them:"),
-        occurrence_activity_dropdown
-    ])
-    return (
-        activity_occurrence_counts,
-        activity_occurrence_summary,
-        occurrence_activity_dropdown,
-    )
-
-
-@app.cell(hide_code=True)
-def _(
-    activity_occurrence_counts,
-    activity_occurrence_summary,
-    mo,
-    occurrence_activity_dropdown,
-    su,
-):
-    # Show the case coverage per activity type and the occurrence distribution of the selected one
-    activity_occurrence_distribution = su.get_occurrence_distribution(
-        activity_occurrence_counts, occurrence_activity_dropdown.value
-    )
-
-    _total_cases = len(activity_occurrence_counts)
-    _cases_with_activity = (activity_occurrence_counts[occurrence_activity_dropdown.value] > 0).sum()
-
-    mo.ui.tabs({
-        "Occurrence per activity type": activity_occurrence_summary,
-        "Distribution for selected activity": mo.vstack([
-            mo.md(
-                f"'{occurrence_activity_dropdown.value}' occurs in {_cases_with_activity} "
-                f"of {_total_cases} cases ({_cases_with_activity / _total_cases * 100:.2f}%)"
-            ),
-            activity_occurrence_distribution
-        ]),
     })
     return
 
@@ -722,62 +711,12 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(r"""
-    ## Event Enrichment
-    TBD where to position in the notebook
-    """)
+    activity_attribute_association_notes_editor = mo.ui.code_editor(
+        language="python",
+        label="Write your notes on the activity-attribute associations here")
+
+    mo.vstack([activity_attribute_association_notes_editor])
     return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    _sample_enrichment = "event_log['weekday'] = event_log['time:timestamp'].apply(lambda x: x.weekday())"
-
-    event_enrichment_code_editor = mo.ui.code_editor(
-        value=_sample_enrichment,
-        language="python",
-        label="Write your code here")
-
-    event_enrichment_submit_button = mo.ui.run_button(label="Submit")
-    mo.vstack([event_enrichment_code_editor, event_enrichment_submit_button])
-    return event_enrichment_code_editor, event_enrichment_submit_button
-
-
-@app.cell
-def _(mo):
-    _sample_enrichment = "case_log['duration'] = case_log['end_time'] - case_log['start_time']"
-
-    case_enrichment_code_editor = mo.ui.code_editor(
-        value=_sample_enrichment,
-        language="python",
-        label="Write your code here")
-
-    case_enrichment_submit_button = mo.ui.run_button(label="Submit")
-    mo.vstack([case_enrichment_code_editor, case_enrichment_submit_button])
-    return case_enrichment_code_editor, case_enrichment_submit_button
-
-
-@app.cell(hide_code=True)
-def _(
-    CASE_FEATURE_COLUMNS,
-    CASE_ID,
-    case_enrichment_code_editor,
-    case_enrichment_submit_button,
-    event_log,
-):
-    cases = event_log.groupby(CASE_ID)
-    case_log = cases.agg(
-        start_time=('time:timestamp','first'),
-        end_time=('time:timestamp', 'last'),
-        no_of_events=('concept:name', 'count'),
-        **{col: (col, 'first') for col in CASE_FEATURE_COLUMNS}
-    )
-
-    # add manual enrichments here
-    if case_enrichment_submit_button.value:
-        exec(case_enrichment_code_editor.value)
-        print('done')
-    return (case_log,)
 
 
 @app.cell(hide_code=True)
@@ -892,8 +831,22 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Attribute Dependencies
+    ## Analysis of Attribute Relationships
     """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(case_log, mo, px):
+    # Show the pairwise linear correlation between the numeric case attributes
+    _correlations = case_log.corr(numeric_only=True)
+
+    _fig = px.imshow(_correlations, width=600)
+
+    mo.vstack([
+        mo.md("Pairwise Pearson correlation between the numeric attributes of the case log:"),
+        _fig
+    ])
     return
 
 
@@ -975,9 +928,9 @@ def _(
         else:
             _hx, _hy, _mi, _nmi = _result
             attribute_dependence = mo.md(
-                f"H({x_axis_dropdown.value}) = **{_hx:.4f}** bits\n\n"
-                f"H({y_axis_dropdown.value}) = **{_hy:.4f}** bits\n\n"
-                f"MI({x_axis_dropdown.value}; {y_axis_dropdown.value}) = **{_mi:.4f}** bits\n\n"
+                #f"H({x_axis_dropdown.value}) = **{_hx:.4f}** bits\n\n"
+                #f"H({y_axis_dropdown.value}) = **{_hy:.4f}** bits\n\n"
+                #f"MI({x_axis_dropdown.value}; {y_axis_dropdown.value}) = **{_mi:.4f}** bits\n\n"
                 f"NMI({x_axis_dropdown.value}; {y_axis_dropdown.value}) = **{_nmi:.4f}**"
             )
 
@@ -1009,7 +962,7 @@ def _(mo, redundant_attribute_candidates):
     )
 
     mo.vstack([
-        mo.md("Select a pair of redundant attribute candidates, i.e., attributes that show information in a one-to-one relation, to inspect:"),
+        mo.md("Select a pair of redundant attribute candidates, i.e., attributes that show information in a one-to-one relation, to inspect (if no candidates have been found, the dropdown is empty):"),
         redundant_pair_dropdown
     ])
     return (redundant_pair_dropdown,)
@@ -1037,6 +990,82 @@ def _(mo, pd, redundant_attribute_candidates, redundant_pair_dropdown):
         "Redundant attribute candidate pairs": redundant_pair_overview,
         "Selected mapping": redundant_pair_mapping,
     })
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Event Enrichment
+    TBD where to position in the notebook
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    _sample_enrichment = "event_log['weekday'] = event_log['time:timestamp'].apply(lambda x: x.weekday())"
+
+    event_enrichment_code_editor = mo.ui.code_editor(
+        value=_sample_enrichment,
+        language="python",
+        label="Write your code here")
+
+    event_enrichment_submit_button = mo.ui.run_button(label="Submit")
+    mo.vstack([event_enrichment_code_editor, event_enrichment_submit_button])
+    return event_enrichment_code_editor, event_enrichment_submit_button
+
+
+@app.cell
+def _(mo):
+    _sample_enrichment = "case_log['duration'] = case_log['end_time'] - case_log['start_time']"
+
+    case_enrichment_code_editor = mo.ui.code_editor(
+        value=_sample_enrichment,
+        language="python",
+        label="Write your code here")
+
+    case_enrichment_submit_button = mo.ui.run_button(label="Submit")
+    mo.vstack([case_enrichment_code_editor, case_enrichment_submit_button])
+    return case_enrichment_code_editor, case_enrichment_submit_button
+
+
+@app.cell(hide_code=True)
+def _(
+    CASE_FEATURE_COLUMNS,
+    CASE_ID,
+    case_enrichment_code_editor,
+    case_enrichment_submit_button,
+    event_log,
+):
+    cases = event_log.groupby(CASE_ID)
+    case_log = cases.agg(
+        start_time=('time:timestamp','first'),
+        end_time=('time:timestamp', 'last'),
+        no_of_events=('concept:name', 'count'),
+        **{col: (col, 'first') for col in CASE_FEATURE_COLUMNS}
+    )
+
+    # add manual enrichments here
+    if case_enrichment_submit_button.value:
+        exec(case_enrichment_code_editor.value)
+        print('done')
+    return (case_log,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ##Transaction Detection
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ##Concurrent Event Detection
+    """)
     return
 
 
