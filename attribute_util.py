@@ -171,3 +171,54 @@ def normalized_mutual_information(x, y, bins):
     nmi = mi / denom if denom > 0 else 0.0
 
     return hx, hy, mi, nmi
+
+
+def get_monotonicity_label(non_decreasing, non_increasing):
+    if non_decreasing and non_increasing:
+        return 'constant'
+    if non_decreasing:
+        return 'non-decreasing'
+    if non_increasing:
+        return 'non-increasing'
+    return 'none'
+
+
+def get_log_level_monotonicity(event_log, attribute):
+    # assumes the log is already globally ordered by completion time
+    values = event_log[attribute].dropna()
+
+    return get_monotonicity_label(
+        values.is_monotonic_increasing, values.is_monotonic_decreasing
+    )
+
+
+def get_monotonicity_per_attribute(event_log, case_id_column, completion_time_column, attributes, check_log_level=False):
+    # sorting once for all attributes, instead of once per attribute
+    by_case = event_log.sort_values([case_id_column, completion_time_column])
+    case_groups = by_case.groupby(case_id_column)
+
+    def direction_flags(values):
+        non_null = values.dropna()
+        return non_null.is_monotonic_increasing, non_null.is_monotonic_decreasing
+
+    rows = []
+    for attribute in attributes:
+        flags = case_groups[attribute].apply(direction_flags)
+        non_decreasing = flags.map(lambda case_flags: case_flags[0])
+        non_increasing = flags.map(lambda case_flags: case_flags[1])
+
+        rows.append({
+            'Attribute': attribute,
+            'Monotonicity within cases': get_monotonicity_label(
+                non_decreasing.all(), non_increasing.all()
+            ),
+            'Cases not monotonic': int((~(non_decreasing | non_increasing)).sum()),
+            'Monotonicity over log': (
+                get_log_level_monotonicity(event_log, attribute) if check_log_level else None
+            ),
+        })
+
+    return pd.DataFrame(
+        rows,
+        columns=['Attribute', 'Monotonicity within cases', 'Cases not monotonic', 'Monotonicity over log'],
+    ).set_index('Attribute')
