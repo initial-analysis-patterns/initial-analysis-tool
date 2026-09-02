@@ -50,8 +50,14 @@ def _(Path, mo):
 
 
 @app.cell(hide_code=True)
-def _(browser, pd, pm4py):
+def _(browser, mo, pd, pm4py):
     # Load event log from disk
+
+    mo.stop(
+        len(browser.value) == 0,
+        mo.md("**Select an event log to start the analysis.**"),
+    )
+
 
     if len(browser.value) > 0:
         path = browser.value[0].id
@@ -69,7 +75,7 @@ def _(browser, pd, pm4py):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Temporal Characteristics of the Log Overview
+    ## Timestamp Attributes in the Log
     """)
     return
 
@@ -109,16 +115,55 @@ def _(event_log_from_disk, mo, pd, tcu):
 
 
 @app.cell(hide_code=True)
-def _(event_log_from_disk, mo, tcu):
+def _(event_log_from_disk, mo, pd):
+    # Select a timestamp attribute to inspect
+    _timestamp_attributes = [
+        col
+        for col in event_log_from_disk.columns
+        if (
+            isinstance(event_log_from_disk[col].dtype, pd.DatetimeTZDtype)
+            or pd.api.types.is_datetime64_dtype(event_log_from_disk[col])
+        )
+    ]
+
+    timestamp_attribute_dropdown = mo.ui.dropdown(
+        options=_timestamp_attributes,
+        value=_timestamp_attributes[0] if _timestamp_attributes else None,
+        label="Timestamp attribute: ",
+        searchable=True,
+    )
+
+    mo.vstack([
+        mo.md("Select a timestamp attribute to inspect:"),
+        timestamp_attribute_dropdown
+    ])
+    return (timestamp_attribute_dropdown,)
+
+
+@app.cell(hide_code=True)
+def _(event_log_from_disk, mo, tcu, timestamp_attribute_dropdown):
     # Show the granularity level of the encoded timestamps in the log, including whether timestamp components and timezone are constant
     timestamp_component_summary, timestamp_constant_prefixes = tcu.analyze_timestamp_components(event_log_from_disk)
 
+    _selected_timestamp = timestamp_attribute_dropdown.value
+
+    _component_view = timestamp_component_summary[
+        timestamp_component_summary['Timestamp column'] == _selected_timestamp
+    ].drop(columns='Timestamp column')
+
+    _prefix_view = timestamp_constant_prefixes[
+        timestamp_constant_prefixes['Timestamp column'] == _selected_timestamp
+    ].drop(columns='Timestamp column')
+
     mo.vstack([
-        mo.md("Showing the precision of each timestamp column and whether any timestamp elements are constant, based on the data recorded therein:"),
+        mo.md(
+            f"Showing the precision of '{_selected_timestamp}' and whether any timestamp "
+            "elements are constant, based on the data recorded therein:"
+        ),
         mo.ui.tabs({
-        "Component analysis": timestamp_component_summary,
-        "Constant prefixes": timestamp_constant_prefixes,
-    })
+            "Component analysis": _component_view,
+            "Constant prefixes": _prefix_view,
+        }),
     ])
     return
 
@@ -136,7 +181,7 @@ def _(event_log_from_disk, mo):
 
 
 @app.cell(hide_code=True)
-def _(checkbox, mo):
+def _(checkbox, fully_filled_columns, mo):
     import pytz
     from datetime import datetime
 
@@ -145,6 +190,12 @@ def _(checkbox, mo):
     _default_timezone = "UTC" if "UTC" in _common_timezones else _common_timezones[0]
 
     GRANULARITY_LEVELS = ['year', 'month', 'day', 'hour', 'minute', 'second', 'millisecond', 'sub-millisecond']
+
+    # Define mandatory columns to be user selected from all consistent columns
+
+    DEFAULT_CASE_ID = "case:concept:name"
+    DEFAULT_ACTIVITY = "concept:name"
+    DEFAULT_COMPLETION_TIME = "time:timestamp"
 
     timezone_dropdown = mo.ui.dropdown(
         options=_common_timezones,
@@ -160,25 +211,6 @@ def _(checkbox, mo):
         label="Select granularity level",
         allow_select_none=True,
     )
-
-    mo.vstack([
-        mo.md("## Time-related Log Initialization Options"),
-        mo.md("Select a time zone to apply to all timestamp columns in the event log and case log:"),
-        mo.hstack([timezone_dropdown], justify="start"),
-        mo.md("(Optional) Select a granularity level to apply to all timestamp columns in the event log and case log:"),
-        mo.hstack([granularity_normalization_dropdown], justify="start"),
-        checkbox
-    ])
-    return granularity_normalization_dropdown, timezone_dropdown
-
-
-@app.cell(hide_code=True)
-def _(fully_filled_columns, mo):
-    # Define mandatory columns to be user selected from all consistent columns
-
-    DEFAULT_CASE_ID = "case:concept:name"
-    DEFAULT_ACTIVITY = "concept:name"
-    DEFAULT_COMPLETION_TIME = "time:timestamp"
 
     CASE_ID_dropdown = mo.ui.dropdown(
         options=fully_filled_columns,
@@ -205,11 +237,22 @@ def _(fully_filled_columns, mo):
     )
 
     mo.vstack([
-        mo.md("## Mandatory Attribute Specification"),
+        mo.md("## Log Initialization"),
+        mo.md("Select a time zone to apply to all timestamp columns in the event log and case log:"),
+        mo.hstack([timezone_dropdown], justify="start"),
+        mo.md("(Optional) Select a granularity level to apply to all timestamp columns in the event log and case log:"),
+        mo.hstack([granularity_normalization_dropdown], justify="start"),
+        checkbox,
         mo.md("Select mandatory attributes from attributes that are fully filled:"),
         mo.hstack([CASE_ID_dropdown, COMPLETION_TIME_dropdown, ACTIVITY_dropdown])
     ])
-    return ACTIVITY_dropdown, CASE_ID_dropdown, COMPLETION_TIME_dropdown
+    return (
+        ACTIVITY_dropdown,
+        CASE_ID_dropdown,
+        COMPLETION_TIME_dropdown,
+        granularity_normalization_dropdown,
+        timezone_dropdown,
+    )
 
 
 @app.cell(hide_code=True)
@@ -246,7 +289,6 @@ def _(
     )
 
     mo.vstack([
-        mo.md("## Sampling of Cases for Exploratory Analysis"),
         mo.md("Select a time frame. Only cases that both start and end within it are "
             f"included for analysis. The initial selection covers the first {DEFAULT_CASE_COUNT} cases."
         ),
@@ -401,13 +443,13 @@ def _(
     # report what the initialization did, and show one kept instance per group of duplicate events
     _output = [mo.md("\n".join(f"- {_message}" for _message in _messages))]
 
-    if duplicate_event_instances.empty:
-        _output.append(mo.md("No duplicated events were found in the log."))
-    else:
+    if not duplicate_event_instances.empty:
         _output.append(mo.md("The following events had duplicates that have been removed, retaining only one:"))
         _output.append(duplicate_event_instances)
 
-    mo.vstack(_output)
+    mo.vstack([mo.md("### Summary of the Initialization"),
+              *_output
+              ])
     return event_log, redundant_attribute_candidates
 
 
@@ -416,9 +458,10 @@ def _(
     ACTIVITY_dropdown,
     CASE_ID_dropdown,
     COMPLETION_TIME_dropdown,
+    au,
+    checkbox,
     event_log,
     fully_filled_columns,
-    mo,
     pd,
 ):
     # Based on selected mandatory attributes, classify each attribute as mandatory, standard, or else
@@ -470,26 +513,69 @@ def _(
         and _case_groups[col].apply(lambda s: s.dropna().nunique()).max() <= 1
     ]
 
-    mo.vstack([
-        mo.md("Case feature columns (unique value per case, possibly NaN):"),
-        mo.md(", ".join(f"`{col}`" for col in CASE_FEATURE_COLUMNS) or "_none_")
+    # summarize how each attribute is classified and populated
+    def _classify_attribute(col, activity_type_count):
+        if col in MANDATORY_COLUMNS:
+            return 'mandatory'
+        if col in STANDARD_COLUMNS:
+            return 'standard'
+        # non-standard attributes are shared if more than one activity type writes them
+        return 'non-standard, shared' if activity_type_count > 1 else 'non-standard, exclusive'
+
+    # check monotonicity over time for the numeric attributes
+    _numeric_attributes = [
+        col for col in event_log.columns
+        if col != 'folded_data' and pd.api.types.is_numeric_dtype(event_log[col])
+    ]
+
+    monotonicity_overview = au.get_monotonicity_per_attribute(
+        event_log, CASE_ID, COMPLETION_TIME, _numeric_attributes,
+        check_log_level=checkbox.value,
+    )
+
+    attribute_overview = pd.DataFrame([
+        {
+            'Attribute': col,
+            'Classification': _classify_attribute(
+                col, int((columns_per_activity[col] != 0).sum())
+            ),
+            'Level': 'case' if col in CASE_FEATURE_COLUMNS else 'event',
+            'Events populated': int(event_log[col].count()),
+            'Events populated %': round(event_log[col].count() / len(event_log) * 100, 2),
+            'Distinct values': int(event_log[col].nunique()),
+            'Activity types': int((columns_per_activity[col] != 0).sum()),
+            'Monotonicity within cases': (
+                monotonicity_overview.loc[col, 'Monotonicity within cases']
+                if col in monotonicity_overview.index else None
+            ),
+            'Cases not monotonic': (
+                monotonicity_overview.loc[col, 'Cases not monotonic']
+                if col in monotonicity_overview.index else None
+            ),
+            'Monotonicity over log': (
+                monotonicity_overview.loc[col, 'Monotonicity over log']
+                if col in monotonicity_overview.index else None
+            ),
+        }
+        for col in event_log.columns
+        if col != 'folded_data'
     ])
     return (
         ACTIVITY,
         CASE_FEATURE_COLUMNS,
         CASE_ID,
-        COMPLETION_TIME,
         MANDATORY_COLUMNS,
         STANDARD_COLUMNS,
         activity_list,
         activity_stats,
+        attribute_overview,
     )
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Event Log View
+    ## Events View
 
     Use for overview or filter for a specific case, activity, or time period. Switch between event log and case table view.
     """)
@@ -501,13 +587,15 @@ def _(
     CASE_FEATURE_COLUMNS,
     MANDATORY_COLUMNS,
     STANDARD_COLUMNS,
+    attribute_overview,
     case_log,
     event_log,
     mo,
 ):
     mo.ui.tabs({
         "Event Log": event_log[[col for col in MANDATORY_COLUMNS+STANDARD_COLUMNS+['folded_data'] if col not in CASE_FEATURE_COLUMNS]],
-        "Case Log": case_log
+        "Case Log": case_log,
+        "Attributes": attribute_overview,
     })
     return
 
@@ -520,6 +608,23 @@ def _(mo):
     Showing the activity schemas, i.e. the attributes that take at least one non-null value across the log for each activity type. Mandatory attributes are excluded from the list. Schema overlaps are attributes that belong to more than one activity schema.
     """)
     return
+
+
+@app.cell(hide_code=True)
+def _(activity_list, mo):
+    # Select an activity type whose schema is shown below
+    schema_activity_dropdown = mo.ui.dropdown(
+        options=activity_list,
+        value=activity_list[0] if activity_list else None,
+        label="Select activity",
+        searchable=True,
+    )
+
+    mo.vstack([
+        mo.md("Select an activity type to inspect the attributes of its schema:"),
+        schema_activity_dropdown
+    ])
+    return (schema_activity_dropdown,)
 
 
 @app.cell(hide_code=True)
@@ -575,256 +680,35 @@ def _(
 
 
 @app.cell(hide_code=True)
-def _(mo, partial_schema_usages, schema_usages):
+def _(
+    ACTIVITY,
+    MANDATORY_COLUMNS,
+    STANDARD_COLUMNS,
+    event_log,
+    mo,
+    partial_schema_usages,
+    schema_activity_dropdown,
+    schema_usages,
+):
+    # Events of the selected activity, with the attributes of its schema
+    _selected_activity = schema_activity_dropdown.value
+    _selected_events = event_log[event_log[ACTIVITY] == _selected_activity]
+    _extra_schema_columns = schema_usages.loc[_selected_activity, 'extra_schema_keys']
+
+    activity_events = mo.ui.table(
+        _selected_events[MANDATORY_COLUMNS + STANDARD_COLUMNS + _extra_schema_columns],
+        selection=None,
+        page_size=15,
+    )
+
     mo.ui.tabs({
         "Activity Schemas": schema_usages[['incidence', 'extra_schema_keys', 'missing_values']],
         "Schema Overlaps": partial_schema_usages[(partial_schema_usages != 0).any(axis=1)],
+        "Selected Activity": mo.vstack([
+            mo.md(f"Events of '{_selected_activity}' ({len(_selected_events)} events):"),
+            activity_events,
+        ]),
     })
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Activity-wise Attribute Filling
-
-    Select an activity type and an attribute from its schema to see how the attribute is populated for the activity type.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(activity_list, mo):
-    activity_dropdown = mo.ui.dropdown(
-        options=activity_list,
-        label="Select Activity",
-        value=activity_list[0]
-    )
-    return (activity_dropdown,)
-
-
-@app.cell(hide_code=True)
-def _(ACTIVITY, activity_dropdown, event_log, mo):
-    events_of_selected_activity = event_log[event_log[ACTIVITY] == activity_dropdown.value]
-    events_of_selected_activity = events_of_selected_activity.dropna(axis=1, how="all")
-
-    selectable_attributes = [ a for a in events_of_selected_activity.columns.tolist() if a != 'folded_data' ]
-
-    # UI: dropdown to choose column
-    attribute_dropdown = mo.ui.dropdown(
-        options=selectable_attributes,
-        value=selectable_attributes[0] if selectable_attributes else None,
-        label="Select attribute"
-    )
-    return attribute_dropdown, events_of_selected_activity
-
-
-@app.cell(hide_code=True)
-def _(activity_dropdown, attribute_dropdown, mo):
-    attribute_bin_selector = mo.ui.number(label="Enter number of bins", value=None)
-    attribute_log_scale = mo.ui.checkbox(label="Y-axis log scale", value=False)
-
-    mo.hstack([activity_dropdown, attribute_dropdown], justify="start") # attribute_bin_selector, attribute_log_scale
-    return attribute_bin_selector, attribute_log_scale
-
-
-@app.cell(hide_code=True)
-def _(
-    attribute_bin_selector,
-    attribute_dropdown,
-    attribute_log_scale,
-    events_of_selected_activity,
-    px,
-):
-    if attribute_dropdown.value:
-        attribute_histogram = px.histogram(
-            events_of_selected_activity,
-            x=attribute_dropdown.value,
-            nbins=attribute_bin_selector.value,
-            log_y=attribute_log_scale.value,
-            marginal='rug'
-        )
-    return (attribute_histogram,)
-
-
-@app.cell(hide_code=True)
-def _(
-    MANDATORY_COLUMNS,
-    STANDARD_COLUMNS,
-    activity_dropdown,
-    attribute_bin_selector,
-    attribute_histogram,
-    events_of_selected_activity,
-    mo,
-    schema_usages,
-):
-    _events_extra_columns = schema_usages.loc[activity_dropdown.value, 'extra_schema_keys']
-
-    mo.ui.tabs({
-        "Histogram": mo.vstack([attribute_bin_selector, attribute_histogram]),
-        "Events": events_of_selected_activity[MANDATORY_COLUMNS+STANDARD_COLUMNS+_events_extra_columns]
-    })
-    return
-
-
-@app.cell(hide_code=True)
-def _(
-    ACTIVITY,
-    CASE_ID,
-    COMPLETION_TIME,
-    activity_dropdown,
-    attribute_dropdown,
-    au,
-    event_log,
-    mo,
-):
-    # Determine how often the selected attribute changes across the selected activity's events within a case
-    if attribute_dropdown.value is None:
-        attribute_change_frequency = mo.md(
-            f"'{activity_dropdown.value}' has no populated attributes."
-        )
-    else:
-        _change_counts = au.get_change_counts_per_case(
-            event_log, CASE_ID, COMPLETION_TIME, ACTIVITY,
-            activity_dropdown.value, attribute_dropdown.value
-        )
-
-        attribute_change_frequency = mo.md(
-            f"Cases considered ('{attribute_dropdown.value}' populated at least once "
-            f"on '{activity_dropdown.value}'): **{len(_change_counts)}**\n\n"
-            f"Average number of changes per case: **{_change_counts.mean():.4f}**\n\n"
-            f"Variance: **{_change_counts.var():.4f}**"
-        )
-
-    attribute_change_frequency
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Activity-Attribute Association
-    It should be checked whether an attribute recorded for an activity is intrinsically associated with that activity. This is an analysis that requires domain knowledge and cannot be automated.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    activity_attribute_association_notes_editor = mo.ui.code_editor(
-        language="python",
-        label="Write your notes on the activity-attribute associations here")
-
-    mo.vstack([activity_attribute_association_notes_editor])
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Analysis of an Attribute in Isolation
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(MANDATORY_COLUMNS, event_log, mo):
-    # Select an attribute to inspect how it is filled across and within cases
-    _selectable_attributes = [
-        col for col in event_log.columns
-        if col not in MANDATORY_COLUMNS and col != 'folded_data'
-    ]
-
-    filling_attribute_dropdown = mo.ui.dropdown(
-        options=_selectable_attributes,
-        value=_selectable_attributes[0] if _selectable_attributes else None,
-        label="Attribute: ",
-        searchable=True,
-    )
-
-    mo.vstack([
-        mo.md("Select an attribute to analyze."),
-        filling_attribute_dropdown
-    ])
-    return (filling_attribute_dropdown,)
-
-
-@app.cell(hide_code=True)
-def _(CASE_ID, au, event_log, filling_attribute_dropdown, mo):
-    # Show the distribution of case-wise filling classes for the selected attribute
-    case_wise_filling_distribution = au.get_case_wise_filling(
-        event_log, CASE_ID, filling_attribute_dropdown.value
-    )
-
-    mo.vstack([
-        mo.md(
-            f"Case-wise distribution of attribute '{filling_attribute_dropdown.value}':"
-        ),
-        case_wise_filling_distribution
-    ])
-    return
-
-
-@app.cell(hide_code=True)
-def _(au, event_log, filling_attribute_dropdown, mo):
-    # Characterize the values of the selected attribute: categorically, or quantitatively if numeric
-
-    attribute_value_characterization = au.characterize_attribute_values(
-        event_log, filling_attribute_dropdown.value
-    )
-
-    mo.vstack([
-        mo.md(
-            f"Value characterization of attribute '{filling_attribute_dropdown.value}':"
-        ),
-        attribute_value_characterization.rename(columns=str)
-    ])
-    return
-
-
-@app.cell(hide_code=True)
-def _(
-    CASE_ID,
-    COMPLETION_TIME,
-    au,
-    checkbox,
-    event_log,
-    filling_attribute_dropdown,
-    mo,
-    pd,
-):
-    # Check whether the selected attribute is monotonically non-decreasing over time
-    _attribute = filling_attribute_dropdown.value
-
-    if not pd.api.types.is_numeric_dtype(event_log[_attribute]):
-        attribute_monotonicity = mo.md(
-            f"'{_attribute}' is not numeric, so monotonicity is not checked."
-        )
-    else:
-        _monotonicity_case_flags = au.get_case_level_monotonic_flags(
-            event_log, CASE_ID, COMPLETION_TIME, _attribute
-        )
-        _violating_cases = _monotonicity_case_flags[~_monotonicity_case_flags].index.tolist()
-
-        if checkbox.value:
-            _log_level = (
-                f"Monotonically increasing over the whole log: "
-                f"**{au.is_log_level_monotonic(event_log, _attribute)}**"
-            )
-        else:
-            _log_level = (
-                "Log-level monotonicity is not checked: the events are not globally "
-                "ordered by completion time. Enable the ordering option during initialization."
-            )
-
-        attribute_monotonicity = mo.md(
-            f"Attribute '{filling_attribute_dropdown.value}' is monotonically increasing within every case: **{_monotonicity_case_flags.all()}**\n\n"
-            f"{_log_level}\n\n"
-            f"Cases where '{_attribute}' is not monotonically increasing "
-            f"({len(_violating_cases)}): {_violating_cases}"
-        )
-
-    attribute_monotonicity
     return
 
 
@@ -875,6 +759,7 @@ def _(case_log, mo):
     )
 
     mo.vstack([
+        mo.md("Select two attributes for multivariate analysis:"),
         mo.hstack([x_axis_dropdown, y_axis_dropdown], justify="start"),
         nmi_bins_slider
     ])
@@ -931,18 +816,10 @@ def _(
                 #f"H({x_axis_dropdown.value}) = **{_hx:.4f}** bits\n\n"
                 #f"H({y_axis_dropdown.value}) = **{_hy:.4f}** bits\n\n"
                 #f"MI({x_axis_dropdown.value}; {y_axis_dropdown.value}) = **{_mi:.4f}** bits\n\n"
-                f"NMI({x_axis_dropdown.value}; {y_axis_dropdown.value}) = **{_nmi:.4f}**"
+                f"The attributes have a normalized mutual information NMI({x_axis_dropdown.value}; {y_axis_dropdown.value}) = **{_nmi:.4f}**"
             )
 
     attribute_dependence
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Redundant Attributes
-    """)
     return
 
 
@@ -962,7 +839,7 @@ def _(mo, redundant_attribute_candidates):
     )
 
     mo.vstack([
-        mo.md("Select a pair of redundant attribute candidates, i.e., attributes that show information in a one-to-one relation, to inspect (if no candidates have been found, the dropdown is empty):"),
+        mo.md("Select a pair of attributes identified to be in a one-to-one relation to inspect them (if no such pairs have been identified, the dropdown is empty):"),
         redundant_pair_dropdown
     ])
     return (redundant_pair_dropdown,)
@@ -997,7 +874,7 @@ def _(mo, pd, redundant_attribute_candidates, redundant_pair_dropdown):
 def _(mo):
     mo.md(r"""
     ## Event Enrichment
-    TBD where to position in the notebook
+    TBD where to position enrichment in the notebook and to replace with Aaron's widget
     """)
     return
 
