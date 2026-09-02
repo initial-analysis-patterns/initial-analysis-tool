@@ -222,3 +222,29 @@ def get_monotonicity_per_attribute(event_log, case_id_column, completion_time_co
         rows,
         columns=['Attribute', 'Monotonicity within cases', 'Cases not monotonic', 'Monotonicity over log'],
     ).set_index('Attribute')
+
+
+def summarize_attribute_values(event_log, attributes):
+    rows = []
+
+    for attribute in attributes:
+        values = event_log[attribute]
+        non_null = values.dropna()
+        counts = non_null.value_counts()
+        is_numeric = pd.api.types.is_numeric_dtype(values)
+
+        rows.append({
+            'Attribute': attribute,
+            'Events populated': int(len(non_null)),
+            'Events populated %': round(len(non_null) / len(event_log) * 100, 2) if len(event_log) else None,
+            'Distinct values': int(non_null.nunique()),
+            'Most frequent value': counts.index[0] if not counts.empty else None,
+            'Most frequent %': round(counts.iloc[0] / len(event_log) * 100, 2) if not counts.empty and len(event_log) else None,
+            'Mean': round(non_null.mean(), 4) if is_numeric and not non_null.empty else None,
+            'Median': non_null.median() if is_numeric and not non_null.empty else None,
+        })
+
+    return pd.DataFrame(rows, columns=[
+        'Attribute', 'Events populated', 'Events populated %', 'Distinct values',
+        'Most frequent value', 'Most frequent %', 'Mean', 'Median',
+    ])

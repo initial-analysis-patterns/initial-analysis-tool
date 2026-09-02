@@ -289,7 +289,7 @@ def _(
     )
 
     mo.vstack([
-        mo.md("Select a time frame. Only cases that both start and end within it are "
+        mo.md("Select a time frame. Only cases that are fully contained within it are "
             f"included for analysis. The initial selection covers the first {DEFAULT_CASE_COUNT} cases."
         ),
         case_window_slider
@@ -593,7 +593,8 @@ def _(
     mo,
 ):
     mo.ui.tabs({
-        "Event Log": event_log[[col for col in MANDATORY_COLUMNS+STANDARD_COLUMNS+['folded_data'] if col not in CASE_FEATURE_COLUMNS]],
+        "Complete Event Log": event_log,
+        "Event Log (Standard+Mandatory Attributes)": event_log[[col for col in MANDATORY_COLUMNS+STANDARD_COLUMNS if col not in CASE_FEATURE_COLUMNS]],
         "Case Log": case_log,
         "Attributes": attribute_overview,
     })
@@ -684,6 +685,7 @@ def _(
     ACTIVITY,
     MANDATORY_COLUMNS,
     STANDARD_COLUMNS,
+    au,
     event_log,
     mo,
     partial_schema_usages,
@@ -695,6 +697,13 @@ def _(
     _selected_events = event_log[event_log[ACTIVITY] == _selected_activity]
     _extra_schema_columns = schema_usages.loc[_selected_activity, 'extra_schema_keys']
 
+    _schema_attributes = [
+        col for col in MANDATORY_COLUMNS + STANDARD_COLUMNS + _extra_schema_columns
+        if col != ACTIVITY
+    ]
+
+    activity_attribute_values = au.summarize_attribute_values(_selected_events, _schema_attributes)
+
     activity_events = mo.ui.table(
         _selected_events[MANDATORY_COLUMNS + STANDARD_COLUMNS + _extra_schema_columns],
         selection=None,
@@ -705,7 +714,9 @@ def _(
         "Activity Schemas": schema_usages[['incidence', 'extra_schema_keys', 'missing_values']],
         "Schema Overlaps": partial_schema_usages[(partial_schema_usages != 0).any(axis=1)],
         "Selected Activity": mo.vstack([
-            mo.md(f"Events of '{_selected_activity}' ({len(_selected_events)} events):"),
+            mo.md(f"Attributes of '{_selected_activity}' over its {len(_selected_events)} events:"),
+            activity_attribute_values,
+            mo.md("Events:"),
             activity_events,
         ]),
     })

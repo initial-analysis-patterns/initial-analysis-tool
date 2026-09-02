@@ -74,13 +74,13 @@ def infer_timestamp_format_from_column(series):
     if len(possible) == 1:
         key = next(iter(possible))
         return {
-            "status": "DETECTED",
+            "status": "FORMAT UNAMBIGUOUSLY DETECTED",
             "format": candidates[key] + (detected_suffix or "")
         }
 
     if len(possible) > 1:
         return {
-            "status": "AMBIGUOUS",
+            "status": "AMBIGUOUS FORMAT",
             "format": ", ".join(
                 candidates[x] + (detected_suffix or "")
                 for x in sorted(possible)
@@ -88,7 +88,7 @@ def infer_timestamp_format_from_column(series):
         }
 
     return {
-        "status": "NOT DETECTED",
+        "status": "FORMAT NOT DETECTED",
         "format": None
     }
 
