@@ -318,3 +318,81 @@ def analyze_attribute_dependence(data, attributes=None, bins=10, max_distinct_va
     ]).sort_values('NMI', ascending=False, na_position='last').reset_index(drop=True)
 
     return nmi_matrix, dependence_table
+
+
+FUNCTIONAL_CARDINALITIES = ['one-to-one', 'many-to-one', 'one-to-many']
+
+
+def functional_relationship(series_a, series_b):
+    """Characterize the value-level relationship between two attributes over jointly-populated rows.
+
+    Always returns a dict describing the pair. 'cardinality' is one of:
+    - 'one-to-one'    : functional in both directions
+    - 'many-to-one'   : a functionally determines b only
+    - 'one-to-many'   : b functionally determines a only
+    - 'many-to-many'  : neither direction is functional (not a functional relationship)
+    - 'trivial'       : fewer than two distinct values on either side
+    - 'disjoint'      : the two attributes are never jointly populated
+
+    'direction' and 'mapping' are populated only for the three functional cardinalities and are None
+    otherwise. 'n_a', 'n_b', 'n_pairs' are the distinct-value and distinct-pair counts over the
+    jointly-populated rows. 'n_rows' is the number of rows where both attributes are populated and
+    'support' is that count divided by the total number of rows (the common association-rule
+    definition), i.e. the share of the log that backs the observed relationship. The non-functional
+    cardinalities are reported for transparency and filtered out at display time.
+    """
+    mask = series_a.notna() & series_b.notna()
+    n_rows = int(mask.sum())
+    support = n_rows / len(series_a) if len(series_a) else 0.0
+    pairs = pd.DataFrame({'a': series_a[mask], 'b': series_b[mask]}).drop_duplicates()
+
+    n_a, n_b, n_pairs = pairs['a'].nunique(), pairs['b'].nunique(), len(pairs)
+    result = {'cardinality': None, 'direction': None, 'mapping': None,
+              'n_a': n_a, 'n_b': n_b, 'n_pairs': n_pairs, 'n_rows': n_rows, 'support': support}
+
+    if n_pairs == 0:
+        return {**result, 'cardinality': 'disjoint'}
+
+    if n_a < 2 or n_b < 2:
+        return {**result, 'cardinality': 'trivial'}  # fewer than two distinct values on either side
+
+    a_determines_b = pairs.groupby('a')['b'].nunique().max() == 1
+    b_determines_a = pairs.groupby('b')['a'].nunique().max() == 1
+
+    if a_determines_b and b_determines_a:
+        cardinality, direction, mapping = 'one-to-one', 'a_to_b', pairs.set_index('a')['b'].to_dict()
+    elif a_determines_b:
+        cardinality, direction, mapping = 'many-to-one', 'a_to_b', pairs.set_index('a')['b'].to_dict()
+    elif b_determines_a:
+        cardinality, direction, mapping = 'one-to-many', 'b_to_a', pairs.set_index('b')['a'].to_dict()
+    else:
+        return {**result, 'cardinality': 'many-to-many'}  # not a functional relationship
+
+    return {**result, 'cardinality': cardinality, 'direction': direction, 'mapping': mapping}
+
+
+def find_functional_relationships(event_log, columns=None):
+    """Characterize every attribute pair; functional and non-functional pairs are both returned."""
+    if columns is None:
+        columns = event_log.columns.tolist()
+
+    all_pairs = []
+    for attribute_a, attribute_b in itertools.combinations(columns, 2):
+        relationship = functional_relationship(event_log[attribute_a], event_log[attribute_b])
+        all_pairs.append({
+            'attribute_a': attribute_a,
+            'attribute_b': attribute_b,
+            'cardinality': relationship['cardinality'],
+            'direction': relationship['direction'],
+            'n_a': relationship['n_a'],
+            'n_b': relationship['n_b'],
+            'n_pairs': relationship['n_pairs'],
+            'n_rows': relationship['n_rows'],
+            'support': relationship['support'],
+            'mapping': relationship['mapping'],
+        })
+
+    return pd.DataFrame(all_pairs, columns=[
+        'attribute_a', 'attribute_b', 'cardinality', 'direction',
+        'n_a', 'n_b', 'n_pairs', 'n_rows', 'support', 'mapping',
+    ])

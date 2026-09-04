@@ -398,8 +398,8 @@ def _(
         exec(event_enrichment_code_editor.value)
         _messages.append("Applied the manual event enrichment")
 
-    # find attribute pairs that encode the same information
-    redundant_attribute_candidates = au.find_redundant_attribute_pairs(event_log)
+    # characterize the functional relationships between all attribute pairs
+    attribute_relationships = au.find_functional_relationships(event_log)
 
     # check for and remove events that are exact duplicates of another event
     duplicate_event_instances = dqu.summarize_duplicate_events(event_log)
@@ -452,7 +452,7 @@ def _(
     mo.vstack([mo.md("### Summary of the Initialization"),
               *_output
               ])
-    return event_log, redundant_attribute_candidates
+    return attribute_relationships, event_log
 
 
 @app.cell(hide_code=True)
@@ -781,14 +781,18 @@ def _(au, case_log, max_distinct_input, mo, nmi_bins_slider, px):
 
 
 @app.cell(hide_code=True)
-def _(mo, redundant_attribute_candidates):
-    # Select a pair of redundant attribute candidates to inspect
+def _(attribute_relationships, au, mo):
+    # Select a functional relationship to inspect
+    functional_relationships = attribute_relationships[
+        attribute_relationships['cardinality'].isin(au.FUNCTIONAL_CARDINALITIES)
+    ].reset_index(drop=True)
+
     _pair_labels = {
-        f"{_row.attribute_a} <-> {_row.attribute_b} ({_row.n_values} values)": _row.Index
-        for _row in redundant_attribute_candidates.itertuples()
+        f"{_row.attribute_a} <-> {_row.attribute_b} ({_row.cardinality})": _row.Index
+        for _row in functional_relationships.itertuples()
     }
 
-    redundant_pair_dropdown = mo.ui.dropdown(
+    relationship_pair_dropdown = mo.ui.dropdown(
         options=_pair_labels,
         value=next(iter(_pair_labels), None),
         label="Select attribute pair",
@@ -796,33 +800,59 @@ def _(mo, redundant_attribute_candidates):
     )
 
     mo.vstack([
-        mo.md("Select a pair of attributes identified to be in a one-to-one relation to inspect them (if no such pairs have been identified, the dropdown is empty):"),
-        redundant_pair_dropdown
+        mo.md(
+            "Select a pair of attributes in a functional relationship, i.e. where the values of one "
+            "attribute determine the values of the other, to inspect the mapping between their values "
+            "(if no such pairs have been identified, the dropdown is empty):"
+        ),
+        mo.md("Over the events where both attributes are populated, an attribute A functionally determines an attribute B if every value of A co-occurs with exactly one value of B. Pairs are characterized as one-to-one (both directions), many-to-one or one-to-many (one direction). Many-to-many relationships are determined when neither of the former is detected. Support is the share of events where both attributes are populated. "
+            "Pairs that are not in functional relationships are listed separately with their reason: many-to-many, trivial (one attribute takes fewer than two distinct values on the jointly populated events), or disjoint (the attributes are never populated on the same event)."),
+        relationship_pair_dropdown
     ])
-    return (redundant_pair_dropdown,)
+    return functional_relationships, relationship_pair_dropdown
 
 
 @app.cell(hide_code=True)
-def _(mo, pd, redundant_attribute_candidates, redundant_pair_dropdown):
-    # Show attribute pairs that encode the same information through a one-to-one value mapping
-    if redundant_attribute_candidates.empty:
-        redundant_pair_overview = pd.DataFrame(
-            columns=['attribute_a', 'attribute_b', 'n_values']
-        )
-        redundant_pair_mapping = pd.DataFrame()
+def _(
+    attribute_relationships,
+    au,
+    functional_relationships,
+    mo,
+    pd,
+    relationship_pair_dropdown,
+):
+    # Show the functional relationships, the mapping of the selected pair, and the pairs that are not functional
+    _non_functional = attribute_relationships[attribute_relationships['cardinality'].isin(au.FUNCTIONAL_CARDINALITIES)
+    ].reset_index(drop=True)
+
+    if functional_relationships.empty or relationship_pair_dropdown.value is None:
+        _mapping_view = mo.md("No functional relationship selected.")
     else:
-        redundant_pair_overview = redundant_attribute_candidates[
-            ['attribute_a', 'attribute_b', 'n_values']
-        ]
-        _row = redundant_attribute_candidates.loc[redundant_pair_dropdown.value]
-        redundant_pair_mapping = pd.DataFrame({
-            _row['attribute_a']: list(_row['mapping'].keys()),
-            _row['attribute_b']: list(_row['mapping'].values()),
-        })
+        _row = functional_relationships.loc[relationship_pair_dropdown.value]
+
+        if _row['direction'] == 'a_to_b':
+            _source, _target = _row['attribute_a'], _row['attribute_b']
+        else:
+            _source, _target = _row['attribute_b'], _row['attribute_a']
+
+        _mapping_view = mo.vstack([
+            mo.md(
+                f"'{_row['attribute_a']}' <-> '{_row['attribute_b']}': **{_row['cardinality']}** "
+                f"({_row['n_a']} distinct '{_row['attribute_a']}' values, "
+                f"{_row['n_b']} distinct '{_row['attribute_b']}' values, "
+                f"support {_row['support']:.4f} over {_row['n_rows']} events)\n\n"
+                f"Functional mapping '{_source}' -> '{_target}':"
+            ),
+            pd.DataFrame({
+                _source: list(_row['mapping'].keys()),
+                _target: list(_row['mapping'].values()),
+            }),
+        ])
 
     mo.ui.tabs({
-        "Redundant attribute candidate pairs": redundant_pair_overview,
-        "Selected mapping": redundant_pair_mapping,
+        "All functional relationships": functional_relationships.drop(columns=['mapping']),
+        "Selected mapping": _mapping_view,
+        "Not functional": _non_functional.drop(columns=['mapping', 'direction']),
     })
     return
 
