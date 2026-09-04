@@ -16,6 +16,8 @@ def _(mo):
 def _():
     import marimo as mo
     import pandas as pd 
+    import numpy as np 
+    import networkx as nx 
     import pm4py
     import altair as alt
     alt.data_transformers.enable("vegafusion")
@@ -30,7 +32,7 @@ def _():
     dqu = importlib.reload(dqu)
     import structure_util as su
     su = importlib.reload(su)
-    return Path, au, dqu, mo, pd, pm4py, px, tcu
+    return Path, au, dqu, mo, np, nx, pd, pm4py, px, tcu
 
 
 @app.cell(hide_code=True)
@@ -564,6 +566,7 @@ def _(
         ACTIVITY,
         CASE_FEATURE_COLUMNS,
         CASE_ID,
+        COMPLETION_TIME,
         MANDATORY_COLUMNS,
         STANDARD_COLUMNS,
         activity_list,
@@ -944,7 +947,7 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ##Transaction Detection
+    ##Complexity Reduction
     """)
     return
 
@@ -952,8 +955,282 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ##Concurrent Event Detection
+    ### Timestamp Coincidence
     """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ##### Super event detection
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    min_set_size_input = mo.ui.number(
+        label="Minimum set size for super-event detection",
+        value=2,
+        start=2,
+        step=1,
+    )
+    min_set_size_input
+    return (min_set_size_input,)
+
+
+@app.cell
+def _(ACTIVITY, CASE_ID, COMPLETION_TIME, event_log, min_set_size_input, pd):
+    #Build timestamp-level event sets
+    window_df = (
+        event_log.groupby([CASE_ID, COMPLETION_TIME])[ACTIVITY]
+        .agg(lambda s: frozenset(sorted(set(s))))
+        .reset_index(name='event_set')
+    )
+    window_df = window_df[window_df['event_set'].map(len) >= min_set_size_input.value].copy()
+    window_df['set_size'] = window_df['event_set'].map(len)
+
+    #Aggregate concurrent sets
+    set_summary = (  # Aggregate each concurrent event set.
+        window_df.groupby('event_set')  # Group identical concurrent sets.
+        .agg(occurrences=(CASE_ID, 'size'), cases_with_set=(CASE_ID, 'nunique'))  # Count windows and cases.
+        .reset_index()  # Move grouped keys back to columns.
+    )
+
+    #Compute totals
+    total_cases = event_log[CASE_ID].nunique()  # Count all cases in the log.
+    event_totals = event_log[ACTIVITY].value_counts().to_dict()  # Count total occurrences per activity.
+
+    #Build case-level activity universes
+    case_activity_sets = event_log.groupby(CASE_ID)[ACTIVITY].agg(lambda s: set(s)).tolist()  # Build each case's activity universe.
+    case_activity_sets
+
+    #Enrich set descriptors
+    set_summary['set_size'] = set_summary['event_set'].map(len)  # Compute set size.
+
+    #Case support
+    # Compute Case support: how common the concurrent set is across all cases.
+    set_summary['case_support'] = set_summary['cases_with_set'] / total_cases 
+
+    #Set coverage
+    #Compute Set coverage: among cases where all events in the set appear, how often they appear concurrently.
+
+    set_summary['cases_with_all_events'] = set_summary['event_set'].map(  # Count cases where all set events appear.
+        lambda s: sum(s.issubset(case_set) for case_set in case_activity_sets)
+     )
+    set_summary['set_coverage'] = (set_summary['cases_with_set'] / set_summary['cases_with_all_events']).fillna(0.0) 
+
+    #Event coverage
+    # Compute Event coverage: for each set, on average, how frequent its events are relative to their individual total occurrences in the log.
+    if set_summary.empty:
+        set_summary['event_coverage_avg'] = pd.Series(
+            index=set_summary.index,
+            dtype='float64',
+        )
+    else:
+        set_summary['event_coverage_avg'] = set_summary.apply(
+            lambda r: (
+                sum(
+                    r['occurrences'] / event_totals[e]  # Event-level share covered by this concurrent set.
+                    for e in r['event_set']  # Iterate through events in the current set.
+                )
+                / len(r['event_set'])  # Average over set size (number of events in the set), otherwise the coverage would be biased towards larger sets (higher sums with set having more elements)
+            ),
+            axis=1,  # Apply row-wise: one concurrent set at a time.
+        )
+    
+    #Final ranking output
+    set_summary = (  # Select and order final result columns.
+        set_summary[['event_set', 'case_support', 'set_coverage', 'event_coverage_avg', 'occurrences']]
+        .sort_values(['case_support', 'set_coverage', 'event_coverage_avg', 'occurrences'], ascending=False)
+        .reset_index(drop=True)
+    )
+    return (set_summary,)
+
+
+@app.cell
+def _(set_summary):
+    set_summary
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ##### Batch event detection
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    min_batch_cases_input = mo.ui.number(
+        label="Minimum distinct cases for batch-event detection",
+        value=2,
+        start=2,
+        step=1,
+    )
+    min_batch_cases_input
+    return
+
+
+@app.cell
+def _(ACTIVITY, CASE_ID, COMPLETION_TIME, event_log):
+    #Detect cross-case batch events
+    batch_events = (
+        event_log.groupby([ACTIVITY, COMPLETION_TIME])
+        .agg(
+            case_count=(CASE_ID, 'nunique'),
+            case_ids=(CASE_ID, lambda s: tuple(sorted(s.astype(str).unique()))),
+        )
+        .reset_index()
+        .query('case_count >= @min_batch_cases_input.value')
+        .sort_values(['case_count', ACTIVITY, COMPLETION_TIME], ascending=[False, True, True])
+        .reset_index(drop=True)
+    )
+
+    return (batch_events,)
+
+
+@app.cell
+def _(batch_events):
+    batch_events
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Transaction Detection
+    """)
+    return
+
+
+@app.cell
+def _(ACTIVITY, event_log, mo):
+    # Options for excluded events from current log
+    activity_options = sorted(
+        event_log[ACTIVITY].dropna().astype(str).unique().tolist()
+    )
+
+    excluded_events_input = mo.ui.multiselect(
+        options=activity_options,
+        value=[],
+        label="Excluded events",
+    )
+
+    sim_threshold_input = mo.ui.number(
+        label="Similarity threshold",
+        value=0.95,
+        start=0.0,
+        stop=1.0,
+        step=0.01,
+    )
+
+    min_set_size_tr_input = mo.ui.number(
+        label="Minimum set size",
+        value=2,
+        start=2,
+        step=1,
+    )
+
+    mo.vstack([
+        excluded_events_input,
+        sim_threshold_input,
+        min_set_size_tr_input,
+    ])
+    return excluded_events_input, min_set_size_tr_input, sim_threshold_input
+
+
+@app.cell
+def _(
+    ACTIVITY,
+    CASE_ID,
+    event_log,
+    excluded_events_input,
+    min_set_size_tr_input,
+    np,
+    nx,
+    pd,
+    sim_threshold_input,
+):
+    # Build case-event count table.
+    count_matrix = (
+        event_log.groupby([CASE_ID, ACTIVITY]).size()
+        .rename('count').reset_index()
+        .pivot(index=CASE_ID, columns=ACTIVITY, values='count')
+        .fillna(0).astype(int)
+    )
+
+    # Exclude selected events and print updated table.
+    use_cols = [c for c in count_matrix.columns if c not in excluded_events_input.value]
+    count_matrix = count_matrix[use_cols].copy()
+
+    # Build event count vectors from the case-event count matrix.
+    # Each row is one event profile across all cases.
+    event_vectors = count_matrix.T.astype(float).copy()
+
+    # Compute pairwise weighted Jaccard similarity matrix (events x events).
+    X = event_vectors.to_numpy()
+    min_sum = np.minimum(X[:, None, :], X[None, :, :]).sum(axis=2)
+    max_sum = np.maximum(X[:, None, :], X[None, :, :]).sum(axis=2)
+
+    # np.divide computes element-wise min_sum / max_sum; using 'where' skips zero denominators,
+    # and 'out' pre-fills those skipped positions with 1.0 (for identical all-zero vector pairs).
+    sim_values = np.divide(
+        min_sum,
+        max_sum,
+        out=np.ones_like(min_sum, dtype=float),
+        where=max_sum > 0
+        )
+
+    similarity_matrix = pd.DataFrame(
+        sim_values,
+        index=event_vectors.index,
+        columns=event_vectors.index
+        )
+
+    # Build a boolean adjacency matrix from the similarity threshold.
+    # True means two events are connected (similar enough).
+    adjacency = (similarity_matrix >= sim_threshold_input.value).copy()
+
+
+    # Create an undirected graph from the adjacency matrix.
+    G = nx.from_pandas_adjacency(adjacency.astype(int))
+
+    # Find maximal cliques: fully connected groups of events.
+    # Keep only cliques that meet the minimum set size.
+    cliques = [sorted(list(c)) for c in nx.find_cliques(G) if len(c) >= min_set_size_tr_input.value]
+
+    # Convert cliques to a candidate-set table.
+    candidate_sets = pd.DataFrame({'event_set': cliques})
+    candidate_sets['set_size'] = candidate_sets['event_set'].map(len)
+
+    # For one candidate set, compute quality from the pairwise similarity submatrix:
+    # 1) take only rows/cols of events in the set
+    # 2) keep upper-triangle pairs (i < j) to avoid duplicates and diagonal
+    # 3) summarize with min and mean pairwise similarity
+    def set_similarity(events):
+        sub = similarity_matrix.loc[events, events].values
+        pair_vals = sub[np.triu_indices(len(events), k=1)]
+        return float(pair_vals.mean())
+
+    candidate_sets['similarity'] = candidate_sets['event_set'].apply(set_similarity)
+
+    # Sort best candidates first (bigger sets, then higher similarity).
+    candidate_sets = candidate_sets.sort_values(
+        ['set_size', 'similarity'],
+        ascending=[False, False]
+    ).reset_index(drop=True)
+
+
+    return (candidate_sets,)
+
+
+@app.cell
+def _(candidate_sets):
+    candidate_sets
     return
 
 
