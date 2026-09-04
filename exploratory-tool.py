@@ -735,105 +735,48 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(case_log, mo, px):
-    # Show the pairwise linear correlation between the numeric case attributes
-    _correlations = case_log.corr(numeric_only=True)
-
-    _fig = px.imshow(_correlations, width=600)
-
-    mo.vstack([
-        mo.md("Pairwise Pearson correlation between the numeric attributes of the case log:"),
-        _fig
-    ])
-    return
-
-
-@app.cell(hide_code=True)
-def _(case_log, mo):
-    _categorical_case_columns = case_log.reset_index().select_dtypes(include=["number", "object", "category", "bool", "datetime", "datetimetz"]).columns.tolist()
-
-    x_axis_dropdown = mo.ui.dropdown(
-        options=_categorical_case_columns,
-        value=_categorical_case_columns[0] if _categorical_case_columns else None,
-        label="X-axis",
-        allow_select_none=False,
-        searchable=True,
-    )
-
-    y_axis_dropdown = mo.ui.dropdown(
-        options=_categorical_case_columns,
-        value=_categorical_case_columns[1] if len(_categorical_case_columns) > 1 else (_categorical_case_columns[0] if _categorical_case_columns else None),
-        label="Y-axis",
-        allow_select_none=False,
-        searchable=True,
-    )
-
+def _(mo):
     nmi_bins_slider = mo.ui.slider(
         start=2, stop=20, value=10, label="Quantile bins for numeric attributes"
     )
 
+    max_distinct_input = mo.ui.number(
+        start=2, stop=1000, value=50, step=1,
+        label="Skip attributes with more distinct values than",
+    )
+
     mo.vstack([
-        mo.md("Select two attributes for multivariate analysis:"),
-        mo.hstack([x_axis_dropdown, y_axis_dropdown], justify="start"),
-        nmi_bins_slider
+        mo.md("Options for the pairwise dependence analysis of the case attributes:"),
+        nmi_bins_slider,
+        max_distinct_input,
     ])
-    return nmi_bins_slider, x_axis_dropdown, y_axis_dropdown
+    return max_distinct_input, nmi_bins_slider
 
 
 @app.cell(hide_code=True)
-def _(case_log, px, x_axis_dropdown, y_axis_dropdown):
+def _(au, case_log, max_distinct_input, mo, nmi_bins_slider, px):
+    # Pairwise dependence between all case attributes: Pearson correlation and normalized mutual information
     case_log_reset = case_log.reset_index()
 
-    case_scatter_fig = px.scatter(
+    nmi_matrix, attribute_dependence_table = au.analyze_attribute_dependence(
         case_log_reset,
-        x=x_axis_dropdown.value,
-        y=y_axis_dropdown.value,
-        hover_data=case_log_reset.columns.tolist(),
-        title=f"{y_axis_dropdown.value} vs {x_axis_dropdown.value}",
-        labels={
-            x_axis_dropdown.value: x_axis_dropdown.value,
-            y_axis_dropdown.value: y_axis_dropdown.value,
-        },
+        bins=nmi_bins_slider.value,
+        max_distinct_values=max_distinct_input.value,
     )
-    case_scatter_fig.update_traces(marker=dict(size=8, opacity=0.7))
-    case_scatter_fig
-    return (case_log_reset,)
 
+    _correlations = case_log.corr(numeric_only=True)
 
-@app.cell(hide_code=True)
-def _(
-    au,
-    case_log_reset,
-    mo,
-    nmi_bins_slider,
-    x_axis_dropdown,
-    y_axis_dropdown,
-):
-    # Assess the statistical dependence between the two selected attributes via normalized mutual information
-    if x_axis_dropdown.value == y_axis_dropdown.value:
-        attribute_dependence = mo.md(f"'{x_axis_dropdown.value}' is compared to itself.")
-    else:
-        _result = au.normalized_mutual_information(
-            case_log_reset[x_axis_dropdown.value],
-            case_log_reset[y_axis_dropdown.value],
-            nmi_bins_slider.value,
-        )
-
-        if _result is None:
-            attribute_dependence = mo.md(
-                f"No rows where both '{x_axis_dropdown.value}' and "
-                f"'{y_axis_dropdown.value}' are populated."
-            )
-        else:
-            _hx, _hy, _mi, _nmi = _result
-            attribute_dependence = mo.md(
-                #f"H({x_axis_dropdown.value}) = **{_hx:.4f}** bits\n\n"
-                #f"H({y_axis_dropdown.value}) = **{_hy:.4f}** bits\n\n"
-                #f"MI({x_axis_dropdown.value}; {y_axis_dropdown.value}) = **{_mi:.4f}** bits\n\n"
-                f"The attributes have a normalized mutual information NMI({x_axis_dropdown.value}; {y_axis_dropdown.value}) = **{_nmi:.4f}**"
-            )
-
-    attribute_dependence
+    mo.vstack([
+        mo.md("Pairwise Pearson correlation between the numeric case attributes:"),
+        px.imshow(_correlations, width=600, zmin=-1, zmax=1),
+        mo.md(
+            "Pairwise normalized mutual information between all case attributes "
+            f"(numeric attributes discretized into {nmi_bins_slider.value} quantile bins):"
+        ),
+        px.imshow(nmi_matrix, width=600, zmin=0, zmax=1),
+        #mo.md("Values per attribute pair:"),
+        #mo.ui.table(attribute_dependence_table, selection=None, page_size=15),
+    ])
     return
 
 
@@ -968,7 +911,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     min_set_size_input = mo.ui.number(
         label="Minimum set size for super-event detection",
@@ -980,7 +923,7 @@ def _(mo):
     return (min_set_size_input,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(ACTIVITY, CASE_ID, COMPLETION_TIME, event_log, min_set_size_input, pd):
     #Build timestamp-level event sets
     window_df = (
@@ -1039,7 +982,7 @@ def _(ACTIVITY, CASE_ID, COMPLETION_TIME, event_log, min_set_size_input, pd):
             ),
             axis=1,  # Apply row-wise: one concurrent set at a time.
         )
-    
+
     #Final ranking output
     set_summary = (  # Select and order final result columns.
         set_summary[['event_set', 'case_support', 'set_coverage', 'event_coverage_avg', 'occurrences']]
@@ -1049,7 +992,7 @@ def _(ACTIVITY, CASE_ID, COMPLETION_TIME, event_log, min_set_size_input, pd):
     return (set_summary,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(set_summary):
     set_summary
     return
@@ -1063,7 +1006,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     min_batch_cases_input = mo.ui.number(
         label="Minimum distinct cases for batch-event detection",
@@ -1075,7 +1018,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(ACTIVITY, CASE_ID, COMPLETION_TIME, event_log):
     #Detect cross-case batch events
     batch_events = (
@@ -1089,11 +1032,10 @@ def _(ACTIVITY, CASE_ID, COMPLETION_TIME, event_log):
         .sort_values(['case_count', ACTIVITY, COMPLETION_TIME], ascending=[False, True, True])
         .reset_index(drop=True)
     )
-
     return (batch_events,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(batch_events):
     batch_events
     return
@@ -1107,7 +1049,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(ACTIVITY, event_log, mo):
     # Options for excluded events from current log
     activity_options = sorted(
@@ -1143,7 +1085,7 @@ def _(ACTIVITY, event_log, mo):
     return excluded_events_input, min_set_size_tr_input, sim_threshold_input
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(
     ACTIVITY,
     CASE_ID,
@@ -1224,11 +1166,10 @@ def _(
         ascending=[False, False]
     ).reset_index(drop=True)
 
-
     return (candidate_sets,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(candidate_sets):
     candidate_sets
     return

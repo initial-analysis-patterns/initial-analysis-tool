@@ -139,6 +139,8 @@ def discretize(series, bins):
 
 def entropy(series):
     probabilities = series.dropna().value_counts(normalize=True)
+    # unobserved categories (e.g. empty quantile bins) have probability 0 and contribute nothing
+    probabilities = probabilities[probabilities > 0]
     return -(probabilities * np.log2(probabilities)).sum()
 
 
@@ -248,3 +250,71 @@ def summarize_attribute_values(event_log, attributes):
         'Attribute', 'Events populated', 'Events populated %', 'Distinct values',
         'Most frequent value', 'Most frequent %', 'Mean', 'Median',
     ])
+
+
+def _mutual_information_from_crosstab(x, y):
+    joint = pd.crosstab(x, y, normalize=True).to_numpy()
+
+    marginal_x = joint.sum(axis=1, keepdims=True)
+    marginal_y = joint.sum(axis=0, keepdims=True)
+
+    positive = joint > 0
+    expected = (marginal_x @ marginal_y)[positive]
+
+    return float((joint[positive] * np.log2(joint[positive] / expected)).sum())
+
+
+def analyze_attribute_dependence(data, attributes=None, bins=10, max_distinct_values=None):
+    """Normalized mutual information for every pair of attributes, plus Pearson correlation where both are numeric."""
+    if attributes is None:
+        attributes = data.columns.tolist()
+
+    if max_distinct_values is not None:
+        attributes = [a for a in attributes if data[a].nunique(dropna=True) <= max_distinct_values]
+
+    binned = {attribute: discretize(data[attribute], bins) for attribute in attributes}
+
+    correlations = data[attributes].corr(numeric_only=True)
+
+    nmi_matrix = pd.DataFrame(float('nan'), index=attributes, columns=attributes)
+    for attribute in attributes:
+        nmi_matrix.loc[attribute, attribute] = 1.0
+
+    rows = []
+    for attribute_a, attribute_b in itertools.combinations(attributes, 2):
+        mask = data[attribute_a].notna() & data[attribute_b].notna()
+
+        if mask.any():
+            x_binned = binned[attribute_a][mask]
+            y_binned = binned[attribute_b][mask]
+
+            hx = entropy(x_binned)
+            hy = entropy(y_binned)
+            mi = _mutual_information_from_crosstab(x_binned, y_binned)
+
+            denominator = (hx + hy) / 2
+            nmi = mi / denominator if denominator > 0 else 0.0
+        else:
+            nmi = None
+
+        if nmi is not None:
+            nmi_matrix.loc[attribute_a, attribute_b] = nmi
+            nmi_matrix.loc[attribute_b, attribute_a] = nmi
+
+        pearson = None
+        if attribute_a in correlations.index and attribute_b in correlations.index:
+            pearson = correlations.loc[attribute_a, attribute_b]
+
+        rows.append({
+            'attribute_a': attribute_a,
+            'attribute_b': attribute_b,
+            'NMI': round(nmi, 4) if nmi is not None else None,
+            'Pearson': round(pearson, 4) if pearson is not None and pd.notna(pearson) else None,
+            'Jointly populated rows': int(mask.sum()),
+        })
+
+    dependence_table = pd.DataFrame(rows, columns=[
+        'attribute_a', 'attribute_b', 'NMI', 'Pearson', 'Jointly populated rows',
+    ]).sort_values('NMI', ascending=False, na_position='last').reset_index(drop=True)
+
+    return nmi_matrix, dependence_table
