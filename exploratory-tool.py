@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.24.0"
+__generated_with = "0.23.16"
 app = marimo.App(width="medium")
 
 
@@ -267,6 +267,8 @@ def _(
     tcu,
 ):
     # Select a time frame; only cases that start and end within it are included in the event log
+    DEFAULT_CASE_COUNT = 1500
+
     _case_bounds = tcu.get_case_time_bounds(
         event_log_from_disk, CASE_ID_dropdown.value, COMPLETION_TIME_dropdown.value
     )
@@ -278,7 +280,6 @@ def _(
     CASE_WINDOW_UNIT = 'D' if (_last_timestamp - CASE_WINDOW_START) >= pd.Timedelta(days=2) else 'h'
     _unit_length = pd.Timedelta(1, CASE_WINDOW_UNIT)
 
-    DEFAULT_CASE_COUNT = 100
     _default_end = tcu.get_end_time_of_nth_case(_case_bounds, DEFAULT_CASE_COUNT)
 
     case_window_slider = mo.ui.range_slider(
@@ -570,6 +571,7 @@ def _(
         MANDATORY_COLUMNS,
         STANDARD_COLUMNS,
         activity_list,
+        activity_schema,
         activity_stats,
         attribute_overview,
     )
@@ -585,21 +587,84 @@ def _(mo):
     return
 
 
+@app.cell
+def _(activity_list, mo):
+    activity_multiselect = mo.ui.multiselect(
+        options=activity_list,
+        value=activity_list[:1] if len(activity_list) >= 1 else activity_list,
+        label="Select activities to see local attributes",
+    )
+    return (activity_multiselect,)
+
+
+@app.cell
+def _(mo):
+    hide_case_features_checkbox = mo.ui.checkbox(
+        label="Hide attributes that are also case-level attributes"
+    )
+    return (hide_case_features_checkbox,)
+
+
+@app.cell(hide_code=True)
+def _(
+    ACTIVITY,
+    CASE_FEATURE_COLUMNS,
+    MANDATORY_COLUMNS,
+    activity_multiselect,
+    activity_schema,
+    event_log,
+    hide_case_features_checkbox,
+    mo,
+):
+    _selected_activities = activity_multiselect.value
+
+    if _selected_activities:
+        _common_attrs = set(activity_schema.get(_selected_activities[0], []))
+        for _act in _selected_activities[1:]:
+            _common_attrs &= set(activity_schema.get(_act, []))
+        _common_attrs = sorted(_common_attrs)
+    else:
+        _common_attrs = []
+
+    if hide_case_features_checkbox.value:
+        _common_attrs = [attr for attr in _common_attrs if attr not in CASE_FEATURE_COLUMNS]
+
+    _display_columns = [attr for attr in MANDATORY_COLUMNS + _common_attrs if attr not in ['folded_data']]
+
+    if _selected_activities:
+        _filtered_log = event_log[event_log[ACTIVITY].isin(_selected_activities)][_display_columns]
+    else:
+        _filtered_log = event_log.iloc[0:0][_display_columns]
+
+    local_view = mo.vstack([
+        mo.md("Select one or more activities to view only the data attributes that are common to their schemas:"),
+        activity_multiselect,
+        hide_case_features_checkbox,
+        mo.ui.table(_filtered_log, selection=None, page_size=15)
+        if _selected_activities
+        else mo.md("_No activities selected._"),
+    ])
+
+    # schema_usages
+    return (local_view,)
+
+
 @app.cell(hide_code=True)
 def _(
     CASE_FEATURE_COLUMNS,
     MANDATORY_COLUMNS,
     STANDARD_COLUMNS,
-    attribute_overview,
     case_log,
     event_log,
+    local_view,
     mo,
 ):
     mo.ui.tabs({
-        "Complete Event Log": event_log,
-        "Event Log (Standard+Mandatory Attributes)": event_log[[col for col in MANDATORY_COLUMNS+STANDARD_COLUMNS if col not in CASE_FEATURE_COLUMNS]],
+        "Global Attributes": event_log[[col for col in MANDATORY_COLUMNS+STANDARD_COLUMNS if col not in CASE_FEATURE_COLUMNS]],
+        "Local Attributes": local_view,
+        "Case Inspection": event_log[[col for col in MANDATORY_COLUMNS+STANDARD_COLUMNS+['folded_data'] if col not in CASE_FEATURE_COLUMNS]],
         "Case Log": case_log,
-        "Attributes": attribute_overview,
+        "Raw Events": event_log
     })
     return
 
@@ -688,6 +753,7 @@ def _(
     ACTIVITY,
     MANDATORY_COLUMNS,
     STANDARD_COLUMNS,
+    attribute_overview,
     au,
     event_log,
     mo,
@@ -716,12 +782,12 @@ def _(
     mo.ui.tabs({
         "Activity Schemas": schema_usages[['incidence', 'extra_schema_keys', 'missing_values']],
         "Schema Overlaps": partial_schema_usages[(partial_schema_usages != 0).any(axis=1)],
+        "Attributes": attribute_overview,
         "Selected Activity": mo.vstack([
             mo.md(f"Attributes of '{_selected_activity}' over its {len(_selected_events)} events:"),
             activity_attribute_values,
             mo.md("Events:"),
-            activity_events,
-        ]),
+            activity_events,],),
     })
     return
 
@@ -1195,7 +1261,6 @@ def _(
         ['set_size', 'similarity'],
         ascending=[False, False]
     ).reset_index(drop=True)
-
     return (candidate_sets,)
 
 
