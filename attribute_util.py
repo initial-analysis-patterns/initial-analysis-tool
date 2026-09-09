@@ -264,13 +264,22 @@ def _mutual_information_from_crosstab(x, y):
     return float((joint[positive] * np.log2(joint[positive] / expected)).sum())
 
 
+def _within_distinct_limit(values, limit):
+    """Whether a column has few enough distinct values to be worth analysing."""
+    try:
+        return values.nunique(dropna=True) <= limit
+    except TypeError:
+        return False
+
+
 def analyze_attribute_dependence(data, attributes=None, bins=10, max_distinct_values=None):
     """Normalized mutual information for every pair of attributes, plus Pearson correlation where both are numeric."""
     if attributes is None:
         attributes = data.columns.tolist()
 
     if max_distinct_values is not None:
-        attributes = [a for a in attributes if data[a].nunique(dropna=True) <= max_distinct_values]
+        attributes = [a for a in attributes
+                      if _within_distinct_limit(data[a], max_distinct_values)]
 
     binned = {attribute: discretize(data[attribute], bins) for attribute in attributes}
 

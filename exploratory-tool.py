@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.16"
+__generated_with = "0.24.0"
 app = marimo.App(width="medium")
 
 
@@ -258,19 +258,25 @@ def _(checkbox, fully_filled_columns, mo):
 
 
 @app.cell(hide_code=True)
-def _(
-    CASE_ID_dropdown,
-    COMPLETION_TIME_dropdown,
-    event_log_from_disk,
-    mo,
-    pd,
-    tcu,
-):
+def _(ACTIVITY_dropdown, CASE_ID_dropdown, COMPLETION_TIME_dropdown):
+    # Name the mandatory attributes once. Everything downstream reads these
+    # rather than the dropdowns, the enrichment widget included -- it has to be
+    # told which columns are the case id, the timestamp and the activity.
+    CASE_ID = CASE_ID_dropdown.value
+    ACTIVITY = ACTIVITY_dropdown.value
+    COMPLETION_TIME = COMPLETION_TIME_dropdown.value
+
+    MANDATORY_COLUMNS = [CASE_ID, ACTIVITY, COMPLETION_TIME]
+    return ACTIVITY, CASE_ID, COMPLETION_TIME, MANDATORY_COLUMNS
+
+
+@app.cell(hide_code=True)
+def _(CASE_ID, COMPLETION_TIME, event_log_from_disk, mo, pd, tcu):
     # Select a time frame; only cases that start and end within it are included in the event log
     DEFAULT_CASE_COUNT = 1500
 
     _case_bounds = tcu.get_case_time_bounds(
-        event_log_from_disk, CASE_ID_dropdown.value, COMPLETION_TIME_dropdown.value
+        event_log_from_disk, CASE_ID, COMPLETION_TIME
     )
 
     CASE_WINDOW_START = _case_bounds['min'].min()
@@ -302,16 +308,13 @@ def _(
 
 @app.cell(hide_code=True)
 def _(
-    CASE_ID_dropdown,
+    CASE_ID,
     CASE_WINDOW_START,
     CASE_WINDOW_UNIT,
-    COMPLETION_TIME_dropdown,
-    au,
+    COMPLETION_TIME,
     case_window_slider,
     checkbox,
     dqu,
-    event_enrichment_code_editor,
-    event_enrichment_submit_button,
     event_log_from_disk,
     granularity_normalization_dropdown,
     mo,
@@ -320,16 +323,16 @@ def _(
     timezone_dropdown,
 ):
     # Initialize the event log
-    event_log = event_log_from_disk
+    initialized_event_log = event_log_from_disk
 
     _messages = []
 
     # apply the selected timezone to all timestamp columns
     _selected_timezone = timezone_dropdown.value
 
-    for _col in event_log.columns:
-        if isinstance(event_log[_col].dtype, pd.DatetimeTZDtype):
-            event_log[_col] = event_log[_col].dt.tz_convert(_selected_timezone)
+    for _col in initialized_event_log.columns:
+        if isinstance(initialized_event_log[_col].dtype, pd.DatetimeTZDtype):
+            initialized_event_log[_col] = initialized_event_log[_col].dt.tz_convert(_selected_timezone)
             _messages.append(f"Converted column '{_col}' to timezone {_selected_timezone}")
 
     # apply the selected timestamp granularity to all timestamp columns
@@ -344,14 +347,14 @@ def _(
             _freq = tcu._FREQ_ALIASES[_target_granularity]
 
             # apply to all timestamp columns
-            for _col in event_log.columns:
-                if isinstance(event_log[_col].dtype, pd.DatetimeTZDtype) or pd.api.types.is_datetime64_dtype(event_log[_col]):
-                    _original = event_log[_col]
+            for _col in initialized_event_log.columns:
+                if isinstance(initialized_event_log[_col].dtype, pd.DatetimeTZDtype) or pd.api.types.is_datetime64_dtype(initialized_event_log[_col]):
+                    _original = initialized_event_log[_col]
                     _rounded = _original.dt.round(_freq)
 
                     _changed = (_rounded != _original).sum()
 
-                    event_log[_col] = _rounded
+                    initialized_event_log[_col] = _rounded
 
                     _messages.append(
                         f"Rounded {_changed}/{len(_original)} values in "
@@ -362,75 +365,67 @@ def _(
     _window_start = CASE_WINDOW_START + pd.Timedelta(case_window_slider.value[0], CASE_WINDOW_UNIT)
     _window_end = CASE_WINDOW_START + pd.Timedelta(case_window_slider.value[1], CASE_WINDOW_UNIT)
 
-    _cases_before = event_log[CASE_ID_dropdown.value].nunique()
+    _cases_before = initialized_event_log[CASE_ID].nunique()
 
-    event_log = tcu.filter_cases_within_window(
-        event_log, CASE_ID_dropdown.value, COMPLETION_TIME_dropdown.value,
+    initialized_event_log = tcu.filter_cases_within_window(
+        initialized_event_log, CASE_ID, COMPLETION_TIME,
         _window_start, _window_end
     )
 
     _messages.append(
         f"Time frame {_window_start} to {_window_end}: kept "
-        f"{event_log[CASE_ID_dropdown.value].nunique()} of {_cases_before} cases "
-        f"({len(event_log)} events)"
+        f"{initialized_event_log[CASE_ID].nunique()} of {_cases_before} cases "
+        f"({len(initialized_event_log)} events)"
     )
 
     # columns that are filled for every row vs. columns that are not consistently filled
-    _fully_filled_columns = [ col for col in event_log.columns if event_log[col].notna().all() ]
-    _inconsistent_columns = [ col for col in event_log.columns if col not in _fully_filled_columns ]
+    _fully_filled_columns = [ col for col in initialized_event_log.columns if initialized_event_log[col].notna().all() ]
+    _inconsistent_columns = [ col for col in initialized_event_log.columns if col not in _fully_filled_columns ]
 
     # from the fully filled columns, drop those that only ever take a single value
-    _constant_columns = [ col for col in _fully_filled_columns if event_log[col].nunique() <= 1 ]
+    _constant_columns = [ col for col in _fully_filled_columns if initialized_event_log[col].nunique() <= 1 ]
     for _col in _constant_columns:
-        _values = event_log[_col].unique()
+        _values = initialized_event_log[_col].unique()
         _value = _values[0] if len(_values) > 0 else None
         _messages.append(f"Dropped constant column '{_col}' with value: {_value}")
-    event_log = event_log.drop(columns=_constant_columns)
+    initialized_event_log = initialized_event_log.drop(columns=_constant_columns)
 
     # from the inconsistently filled columns, drop those that are completely empty
-    _empty_columns = [ col for col in _inconsistent_columns if event_log[col].notna().sum() == 0 ]
+    _empty_columns = [ col for col in _inconsistent_columns if initialized_event_log[col].notna().sum() == 0 ]
     for _col in _empty_columns:
         _messages.append(f"Dropped empty column '{_col}'")
-    event_log = event_log.drop(columns=_empty_columns)
+    initialized_event_log = initialized_event_log.drop(columns=_empty_columns)
     _inconsistent_columns = [ col for col in _inconsistent_columns if col not in _empty_columns ]
 
-    # add manual enrichments here
-    if event_enrichment_submit_button.value:
-        exec(event_enrichment_code_editor.value)
-        _messages.append("Applied the manual event enrichment")
-
-    # characterize the functional relationships between all attribute pairs
-    attribute_relationships = au.find_functional_relationships(event_log)
-
     # check for and remove events that are exact duplicates of another event
-    duplicate_event_instances = dqu.summarize_duplicate_events(event_log)
+    duplicate_event_instances = dqu.summarize_duplicate_events(initialized_event_log)
 
     if not duplicate_event_instances.empty:
-        _events_before = len(event_log)
-        event_log = dqu.remove_duplicate_events(event_log)
+        _events_before = len(initialized_event_log)
+        initialized_event_log = dqu.remove_duplicate_events(initialized_event_log)
         _messages.append(
-            f"Removed {_events_before - len(event_log)} duplicate events "
+            f"Removed {_events_before - len(initialized_event_log)} duplicate events "
             f"in {len(duplicate_event_instances)} groups of identical events"
         )
 
     # Based on the selected COMPLETION TIME column, check whether events are ordered by completion time within each case and across the log
     case_ordering_summary, log_ordering_summary = tcu.analyze_event_ordering(
-        event_log, CASE_ID_dropdown.value, COMPLETION_TIME_dropdown.value
+        initialized_event_log, CASE_ID, COMPLETION_TIME
     )
 
     # Based on whether the checkbox was checked, order the event log
     if checkbox.value:
-        event_log['original_order'] = range(len(event_log))
+        initialized_event_log['original_order'] = range(len(initialized_event_log))
 
-        event_log = event_log.sort_values(
+        initialized_event_log = initialized_event_log.sort_values(
             by=[
-                COMPLETION_TIME_dropdown.value,
+                COMPLETION_TIME,
                 'original_order'
             ]
         ).reset_index(drop=True)
 
-        assert event_log[
-            COMPLETION_TIME_dropdown.value
+        assert initialized_event_log[
+            COMPLETION_TIME
         ].is_monotonic_increasing
         _messages.append("All events in the log are now globally ordered.")
 
@@ -441,7 +436,7 @@ def _(
         dict = {k: v for k, v in event[_inconsistent_columns].items() if pd.notna(v)}
         return dict if dict else None
 
-    event_log['folded_data'] = event_log.apply(fold_data, axis=1)
+    initialized_event_log['folded_data'] = initialized_event_log.apply(fold_data, axis=1)
 
     # report what the initialization did, and show one kept instance per group of duplicate events
     _output = [mo.md("\n".join(f"- {_message}" for _message in _messages))]
@@ -453,14 +448,185 @@ def _(
     mo.vstack([mo.md("### Summary of the Initialization"),
               *_output
               ])
-    return attribute_relationships, event_log
+    return (initialized_event_log,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Log Enrichment
+
+    The widget takes an event log and creates a new event log and an accompanying case log, allowing for enrichments on each level. There are two tabs, one for event log enrichment and one for case log enrichment. An applied
+    event log enrichment can be used in the case log enrichment. The widget employs a staging mechanism
+    so that not every change leads to a full recomputation, only when changes are applied.
+
+    **Note:** the widget is built from the initialized log, so changing the time
+    zone, granularity, time frame, ordering or the mandatory-attribute dropdowns
+    above rebuilds it and clears what has been applied. Changes below do not have that effect.
+
+    Furthermore, below the widget there is also the possibility of further manual enrichment.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    # Marimo state management to make application reactive
+    enrichment_applied, set_enrichment_applied = mo.state(False)
+    return enrichment_applied, set_enrichment_applied
 
 
 @app.cell(hide_code=True)
 def _(
-    ACTIVITY_dropdown,
-    CASE_ID_dropdown,
-    COMPLETION_TIME_dropdown,
+    ACTIVITY,
+    CASE_ID,
+    COMPLETION_TIME,
+    initialized_event_log,
+    set_enrichment_applied,
+):
+    from eclear import EnrichmentWidget
+
+    CARRIED_COLUMNS = [
+        col for col in ('folded_data', 'original_order')
+        if col in initialized_event_log.columns
+    ]
+
+    enricher = EnrichmentWidget(
+        initialized_event_log.drop(columns=CARRIED_COLUMNS),
+        case_id_col=CASE_ID,
+        time_col=COMPLETION_TIME,
+        activity_col=ACTIVITY,
+        on_apply=lambda: set_enrichment_applied(True),
+    )
+    enricher
+    return CARRIED_COLUMNS, enricher
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Enrich the event log by hand
+
+    Anything the widget cannot express belongs here. This runs *after* the
+    widget, on the frame it produced, so `event_log` already carries the applied
+    event enrichments.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    _sample_enrichment = "event_log['weekday'] = event_log['time:timestamp'].apply(lambda x: x.weekday())"
+
+    event_enrichment_code_editor = mo.ui.code_editor(
+        value=_sample_enrichment,
+        language="python",
+        label="Write your code here")
+
+    event_enrichment_submit_button = mo.ui.run_button(label="Submit")
+    mo.vstack([event_enrichment_code_editor, event_enrichment_submit_button])
+    return event_enrichment_code_editor, event_enrichment_submit_button
+
+
+@app.cell(hide_code=True)
+def _(
+    CARRIED_COLUMNS,
+    au,
+    enricher,
+    enrichment_applied,
+    event_enrichment_code_editor,
+    event_enrichment_submit_button,
+    initialized_event_log,
+):
+    enrichment_applied  # re-run this cell whenever the widget applies
+
+    event_log = enricher.event_log.copy()
+
+    # add manual enrichments here
+    if event_enrichment_submit_button.value:
+        exec(event_enrichment_code_editor.value)
+
+    # characterize the functional relationships between all attribute pairs.
+    # The widget's own relative times are left out: they are near-unique by
+    # construction, so pairing them against everything else costs a column's
+    # worth of comparisons and says nothing.
+    attribute_relationships = au.find_functional_relationships(
+        event_log,
+        columns=[col for col in event_log.columns
+                 if col not in ('rel_time', 'rel_log_time')],
+    )
+
+    # put the initialization's row-level bookkeeping back, by index
+    for _col in CARRIED_COLUMNS:
+        event_log[_col] = initialized_event_log[_col]
+    return attribute_relationships, event_log
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ### Enrich the case log by hand
+
+    The same, one level up. `case_log` carries the base case attributes, the
+    applied case enrichments and the case-level attributes found in the log.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    _sample_enrichment = "case_log['events_per_day'] = case_log['no_of_events'] / (case_log['duration'].dt.total_seconds() / 86400)"
+
+    case_enrichment_code_editor = mo.ui.code_editor(
+        value=_sample_enrichment,
+        language="python",
+        label="Write your code here")
+
+    case_enrichment_submit_button = mo.ui.run_button(label="Submit")
+    mo.vstack([case_enrichment_code_editor, case_enrichment_submit_button])
+    return case_enrichment_code_editor, case_enrichment_submit_button
+
+
+@app.cell(hide_code=True)
+def _(
+    CASE_FEATURE_COLUMNS,
+    CASE_ID,
+    case_enrichment_code_editor,
+    case_enrichment_submit_button,
+    enricher,
+    enrichment_applied,
+    event_log,
+):
+    enrichment_applied  # re-run this cell whenever the widget applies
+
+    # start_time, end_time, no_of_events and duration, plus whatever the case
+    # tab applied. start/end are the earliest and latest timestamps of the case
+    # rather than its first and last rows, so an unordered log still yields a
+    # non-negative duration.
+    case_log = enricher.case_log
+
+    # the case-level attributes identified further down: one value per case by
+    # definition, so 'first' takes it. Assigned rather than joined -- a join
+    # returns a new frame and drops the record of which enrichment produced
+    # which column, which is what lets a column be read back later.
+    _case_features = [col for col in CASE_FEATURE_COLUMNS if col not in case_log.columns]
+    if _case_features:
+        _folded = event_log.groupby(CASE_ID)[_case_features].first()
+        for _col in _case_features:
+            case_log[_col] = _folded[_col]
+
+    # add manual enrichments here
+    if case_enrichment_submit_button.value:
+        exec(case_enrichment_code_editor.value)
+    return (case_log,)
+
+
+@app.cell(hide_code=True)
+def _(
+    ACTIVITY,
+    CASE_ID,
+    COMPLETION_TIME,
+    MANDATORY_COLUMNS,
     au,
     checkbox,
     event_log,
@@ -468,12 +634,6 @@ def _(
     pd,
 ):
     # Based on selected mandatory attributes, classify each attribute as mandatory, standard, or else
-
-    CASE_ID = CASE_ID_dropdown.value
-    ACTIVITY = ACTIVITY_dropdown.value
-    COMPLETION_TIME = COMPLETION_TIME_dropdown.value
-
-    MANDATORY_COLUMNS = [CASE_ID, ACTIVITY, COMPLETION_TIME]
 
     activity_stats = event_log[ACTIVITY].value_counts()
     activity_list = list(activity_stats.index)
@@ -564,11 +724,7 @@ def _(
         if col != 'folded_data'
     ])
     return (
-        ACTIVITY,
         CASE_FEATURE_COLUMNS,
-        CASE_ID,
-        COMPLETION_TIME,
-        MANDATORY_COLUMNS,
         STANDARD_COLUMNS,
         activity_list,
         activity_schema,
@@ -921,66 +1077,6 @@ def _(
         "Not functional": _non_functional.drop(columns=['mapping', 'direction']),
     })
     return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Event Enrichment
-    TBD where to position enrichment in the notebook and to replace with Aaron's widget
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    _sample_enrichment = "event_log['weekday'] = event_log['time:timestamp'].apply(lambda x: x.weekday())"
-
-    event_enrichment_code_editor = mo.ui.code_editor(
-        value=_sample_enrichment,
-        language="python",
-        label="Write your code here")
-
-    event_enrichment_submit_button = mo.ui.run_button(label="Submit")
-    mo.vstack([event_enrichment_code_editor, event_enrichment_submit_button])
-    return event_enrichment_code_editor, event_enrichment_submit_button
-
-
-@app.cell
-def _(mo):
-    _sample_enrichment = "case_log['duration'] = case_log['end_time'] - case_log['start_time']"
-
-    case_enrichment_code_editor = mo.ui.code_editor(
-        value=_sample_enrichment,
-        language="python",
-        label="Write your code here")
-
-    case_enrichment_submit_button = mo.ui.run_button(label="Submit")
-    mo.vstack([case_enrichment_code_editor, case_enrichment_submit_button])
-    return case_enrichment_code_editor, case_enrichment_submit_button
-
-
-@app.cell(hide_code=True)
-def _(
-    CASE_FEATURE_COLUMNS,
-    CASE_ID,
-    case_enrichment_code_editor,
-    case_enrichment_submit_button,
-    event_log,
-):
-    cases = event_log.groupby(CASE_ID)
-    case_log = cases.agg(
-        start_time=('time:timestamp','first'),
-        end_time=('time:timestamp', 'last'),
-        no_of_events=('concept:name', 'count'),
-        **{col: (col, 'first') for col in CASE_FEATURE_COLUMNS}
-    )
-
-    # add manual enrichments here
-    if case_enrichment_submit_button.value:
-        exec(case_enrichment_code_editor.value)
-        print('done')
-    return (case_log,)
 
 
 @app.cell(hide_code=True)
