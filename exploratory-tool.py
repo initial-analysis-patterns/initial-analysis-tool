@@ -7,7 +7,9 @@ app = marimo.App(width="medium")
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    # Exploratory Process Mining
+    # Initial Event Log Analysis
+
+    This notebook integrates a set of patterns for initial event log analysis that are useful for exploring the raw event log data before doing any specific process mining analysis such as behavioral, conformance, performance, or deviance analysis.
     """)
     return
 
@@ -36,18 +38,14 @@ def _():
 
 
 @app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ## Select a data set
-    """)
-    return
-
-
-@app.cell(hide_code=True)
 def _(Path, mo):
-    #| slide: continue
-    browser = mo.ui.file_browser(initial_path=Path.cwd(), filetypes=['.csv', '.xes'], multiple=False)
-    browser
+    browser = mo.ui.file_browser(
+        initial_path=Path.cwd(), 
+        filetypes=['.csv', '.xes'], 
+        restrict_navigation=False,
+        multiple=False, 
+        label='Select and event log (xes or csv)')
+    browser.style({"max-height": "200px", "overflow": "auto"})
     return (browser,)
 
 
@@ -77,7 +75,7 @@ def _(browser, mo, pd, pm4py):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Timestamp Attributes in the Log
+    ## Log Initialization
     """)
     return
 
@@ -109,11 +107,11 @@ def _(event_log_from_disk, mo, pd, tcu):
 
     timestamp_format_summary = pd.DataFrame(_format_results)
 
-    mo.vstack([
+    timestamp_analyzer1 = mo.vstack([
         mo.md("Showing the format of each timestamp column, if unambiguously detected from the data recorded therein:"),
         timestamp_format_summary
     ])
-    return
+    return (timestamp_analyzer1,)
 
 
 @app.cell(hide_code=True)
@@ -131,14 +129,9 @@ def _(event_log_from_disk, mo, pd):
     timestamp_attribute_dropdown = mo.ui.dropdown(
         options=_timestamp_attributes,
         value=_timestamp_attributes[0] if _timestamp_attributes else None,
-        label="Timestamp attribute: ",
+        label="Select a Timestamp attribute to inspect: ",
         searchable=True,
     )
-
-    mo.vstack([
-        mo.md("Select a timestamp attribute to inspect:"),
-        timestamp_attribute_dropdown
-    ])
     return (timestamp_attribute_dropdown,)
 
 
@@ -157,29 +150,18 @@ def _(event_log_from_disk, mo, tcu, timestamp_attribute_dropdown):
         timestamp_constant_prefixes['Timestamp column'] == _selected_timestamp
     ].drop(columns='Timestamp column')
 
-    mo.vstack([
+    granularity_analyzer = mo.vstack([
         mo.md(
             f"Showing the precision of '{_selected_timestamp}' and whether any timestamp "
             "elements are constant, based on the data recorded therein:"
         ),
+        timestamp_attribute_dropdown,
         mo.ui.tabs({
             "Component analysis": _component_view,
             "Constant prefixes": _prefix_view,
         }),
     ])
-    return
-
-
-@app.cell(hide_code=True)
-def _(event_log_from_disk, mo):
-    # identify columns that are filled for every row
-    fully_filled_columns = [ col for col in event_log_from_disk.columns if event_log_from_disk[col].notna().all() ]
-
-    _constant_columns = [ col for col in fully_filled_columns if event_log_from_disk[col].nunique() <= 1]
-    fully_filled_columns = [ col for col in fully_filled_columns if col not in _constant_columns ]
-
-    checkbox = mo.ui.checkbox(label="Enforce global ordering of the event log by completion time")
-    return checkbox, fully_filled_columns
+    return (granularity_analyzer,)
 
 
 @app.cell(hide_code=True)
@@ -238,8 +220,7 @@ def _(checkbox, fully_filled_columns, mo):
         searchable=True,
     )
 
-    mo.vstack([
-        mo.md("## Log Initialization"),
+    log_initialization = mo.vstack([
         mo.md("Select a time zone to apply to all timestamp columns in the event log and case log:"),
         mo.hstack([timezone_dropdown], justify="start"),
         mo.md("(Optional) Select a granularity level to apply to all timestamp columns in the event log and case log:"),
@@ -253,57 +234,9 @@ def _(checkbox, fully_filled_columns, mo):
         CASE_ID_dropdown,
         COMPLETION_TIME_dropdown,
         granularity_normalization_dropdown,
+        log_initialization,
         timezone_dropdown,
     )
-
-
-@app.cell(hide_code=True)
-def _(ACTIVITY_dropdown, CASE_ID_dropdown, COMPLETION_TIME_dropdown):
-    # Name the mandatory attributes once. Everything downstream reads these
-    # rather than the dropdowns, the enrichment widget included -- it has to be
-    # told which columns are the case id, the timestamp and the activity.
-    CASE_ID = CASE_ID_dropdown.value
-    ACTIVITY = ACTIVITY_dropdown.value
-    COMPLETION_TIME = COMPLETION_TIME_dropdown.value
-
-    MANDATORY_COLUMNS = [CASE_ID, ACTIVITY, COMPLETION_TIME]
-    return ACTIVITY, CASE_ID, COMPLETION_TIME, MANDATORY_COLUMNS
-
-
-@app.cell(hide_code=True)
-def _(CASE_ID, COMPLETION_TIME, event_log_from_disk, mo, pd, tcu):
-    # Select a time frame; only cases that start and end within it are included in the event log
-    DEFAULT_CASE_COUNT = 1500
-
-    _case_bounds = tcu.get_case_time_bounds(
-        event_log_from_disk, CASE_ID, COMPLETION_TIME
-    )
-
-    CASE_WINDOW_START = _case_bounds['min'].min()
-    _last_timestamp = _case_bounds['max'].max()
-
-    # a day-resolution slider unless the log spans less than two days
-    CASE_WINDOW_UNIT = 'D' if (_last_timestamp - CASE_WINDOW_START) >= pd.Timedelta(days=2) else 'h'
-    _unit_length = pd.Timedelta(1, CASE_WINDOW_UNIT)
-
-    _default_end = tcu.get_end_time_of_nth_case(_case_bounds, DEFAULT_CASE_COUNT)
-
-    case_window_slider = mo.ui.range_slider(
-        start=0,
-        stop=int((_last_timestamp - CASE_WINDOW_START) / _unit_length) + 1,
-        step=1,
-        value=[0, int((_default_end - CASE_WINDOW_START) / _unit_length) + 1],
-        label=f"Time frame in {'days' if CASE_WINDOW_UNIT == 'D' else 'hours'} after {CASE_WINDOW_START}",
-        full_width=True,
-    )
-
-    mo.vstack([
-        mo.md("Select a time frame. Only cases that are fully contained within it are "
-            f"included for analysis. The initial selection covers the first {DEFAULT_CASE_COUNT} cases."
-        ),
-        case_window_slider
-    ])
-    return CASE_WINDOW_START, CASE_WINDOW_UNIT, case_window_slider
 
 
 @app.cell(hide_code=True)
@@ -445,10 +378,93 @@ def _(
         _output.append(mo.md("The following events had duplicates that have been removed, retaining only one:"))
         _output.append(duplicate_event_instances)
 
-    mo.vstack([mo.md("### Summary of the Initialization"),
-              *_output
-              ])
-    return (initialized_event_log,)
+    initialization_summary = mo.vstack([mo.md("### Summary of the Initialization"), *_output])
+    return initialization_summary, initialized_event_log
+
+
+@app.cell(hide_code=True)
+def _(CASE_ID, COMPLETION_TIME, event_log_from_disk, mo, pd, tcu):
+    # Select a time frame; only cases that start and end within it are included in the event log
+    DEFAULT_CASE_COUNT = 1500
+
+    _case_bounds = tcu.get_case_time_bounds(
+        event_log_from_disk, CASE_ID, COMPLETION_TIME
+    )
+
+    CASE_WINDOW_START = _case_bounds['min'].min()
+    _last_timestamp = _case_bounds['max'].max()
+
+    # a day-resolution slider unless the log spans less than two days
+    CASE_WINDOW_UNIT = 'D' if (_last_timestamp - CASE_WINDOW_START) >= pd.Timedelta(days=2) else 'h'
+    _unit_length = pd.Timedelta(1, CASE_WINDOW_UNIT)
+
+    _default_end = tcu.get_end_time_of_nth_case(_case_bounds, DEFAULT_CASE_COUNT)
+
+    case_window_slider = mo.ui.range_slider(
+        start=0,
+        stop=int((_last_timestamp - CASE_WINDOW_START) / _unit_length) + 1,
+        step=1,
+        value=[0, int((_default_end - CASE_WINDOW_START) / _unit_length) + 1],
+        label=f"Time frame in {'days' if CASE_WINDOW_UNIT == 'D' else 'hours'} after {CASE_WINDOW_START}",
+        full_width=True,
+    )
+
+    time_frame_selector = mo.vstack([
+        mo.md("Select a time frame. Only cases that are fully contained within it are "
+            f"included for analysis. The initial selection covers the first {DEFAULT_CASE_COUNT} cases."
+        ),
+        case_window_slider
+    ])
+    return (
+        CASE_WINDOW_START,
+        CASE_WINDOW_UNIT,
+        case_window_slider,
+        time_frame_selector,
+    )
+
+
+@app.cell(hide_code=True)
+def _(
+    granularity_analyzer,
+    initialization_summary,
+    log_initialization,
+    mo,
+    time_frame_selector,
+    timestamp_analyzer1,
+):
+    mo.ui.tabs({
+        "Log Initialization" : log_initialization,
+        "Initialization Summary" : initialization_summary,
+        "Time Frame" : time_frame_selector,
+        "Timestamp attribute detection": timestamp_analyzer1,
+        "Granularity Analysis" : granularity_analyzer
+    })
+    return
+
+
+@app.cell(hide_code=True)
+def _(event_log_from_disk, mo):
+    # identify columns that are filled for every row
+    fully_filled_columns = [ col for col in event_log_from_disk.columns if event_log_from_disk[col].notna().all() ]
+
+    _constant_columns = [ col for col in fully_filled_columns if event_log_from_disk[col].nunique() <= 1]
+    fully_filled_columns = [ col for col in fully_filled_columns if col not in _constant_columns ]
+
+    checkbox = mo.ui.checkbox(label="Enforce global ordering of the event log by completion time")
+    return checkbox, fully_filled_columns
+
+
+@app.cell(hide_code=True)
+def _(ACTIVITY_dropdown, CASE_ID_dropdown, COMPLETION_TIME_dropdown):
+    # Name the mandatory attributes once. Everything downstream reads these
+    # rather than the dropdowns, the enrichment widget included -- it has to be
+    # told which columns are the case id, the timestamp and the activity.
+    CASE_ID = CASE_ID_dropdown.value
+    ACTIVITY = ACTIVITY_dropdown.value
+    COMPLETION_TIME = COMPLETION_TIME_dropdown.value
+
+    MANDATORY_COLUMNS = [CASE_ID, ACTIVITY, COMPLETION_TIME]
+    return ACTIVITY, CASE_ID, COMPLETION_TIME, MANDATORY_COLUMNS
 
 
 @app.cell(hide_code=True)
@@ -498,20 +514,7 @@ def _(
         activity_col=ACTIVITY,
         on_apply=lambda: set_enrichment_applied(True),
     )
-    enricher
     return CARRIED_COLUMNS, enricher
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ### Enrich the event log by hand
-
-    Anything the widget cannot express belongs here. This runs *after* the
-    widget, on the frame it produced, so `event_log` already carries the applied
-    event enrichments.
-    """)
-    return
 
 
 @app.cell(hide_code=True)
@@ -523,9 +526,15 @@ def _(mo):
         language="python",
         label="Write your code here")
 
+    _intro = mo.md("Enrich the event log by hand. Anything the widget cannot express belongs here. This runs *after* the widget, on the frame it produced, so `event_log` already carries the applied event enrichments.")
+
     event_enrichment_submit_button = mo.ui.run_button(label="Submit")
-    mo.vstack([event_enrichment_code_editor, event_enrichment_submit_button])
-    return event_enrichment_code_editor, event_enrichment_submit_button
+    manual_event_enrichment = mo.vstack([_intro, event_enrichment_code_editor, event_enrichment_submit_button])
+    return (
+        event_enrichment_code_editor,
+        event_enrichment_submit_button,
+        manual_event_enrichment,
+    )
 
 
 @app.cell(hide_code=True)
@@ -564,17 +573,6 @@ def _(
 
 @app.cell(hide_code=True)
 def _(mo):
-    mo.md(r"""
-    ### Enrich the case log by hand
-
-    The same, one level up. `case_log` carries the base case attributes, the
-    applied case enrichments and the case-level attributes found in the log.
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
     _sample_enrichment = "case_log['events_per_day'] = case_log['no_of_events'] / (case_log['duration'].dt.total_seconds() / 86400)"
 
     case_enrichment_code_editor = mo.ui.code_editor(
@@ -582,9 +580,15 @@ def _(mo):
         language="python",
         label="Write your code here")
 
+    _intro = mo.md("Enrich the case log by hand.  The same, one level up. case_log carries the base case attributes, the applied case enrichments and the case-level attributes found in the log.")
+
     case_enrichment_submit_button = mo.ui.run_button(label="Submit")
-    mo.vstack([case_enrichment_code_editor, case_enrichment_submit_button])
-    return case_enrichment_code_editor, case_enrichment_submit_button
+    manual_case_enrichment = mo.vstack([_intro, case_enrichment_code_editor, case_enrichment_submit_button])
+    return (
+        case_enrichment_code_editor,
+        case_enrichment_submit_button,
+        manual_case_enrichment,
+    )
 
 
 @app.cell(hide_code=True)
@@ -630,7 +634,6 @@ def _(
     au,
     checkbox,
     event_log,
-    fully_filled_columns,
     pd,
 ):
     # Based on selected mandatory attributes, classify each attribute as mandatory, standard, or else
@@ -645,9 +648,9 @@ def _(
         data.append(_counts)
     columns_per_activity = pd.DataFrame.from_records(data, index=activity_stats.index)
 
-    # everywhere_non_empty_columns = [col for col in columns_per_activity.columns if (columns_per_activity[col] != 0).all()]
+    everywhere_non_empty_columns = [col for col in columns_per_activity.columns if (columns_per_activity[col] != 0).all()]
 
-    STANDARD_COLUMNS = [col for col in fully_filled_columns if col not in MANDATORY_COLUMNS]
+    STANDARD_COLUMNS = [col for col in everywhere_non_empty_columns if col not in MANDATORY_COLUMNS] # fully_filled_columns
 
     activity_schema = {}
     activity_schema_population = {}
@@ -731,6 +734,16 @@ def _(
         activity_stats,
         attribute_overview,
     )
+
+
+@app.cell(hide_code=True)
+def _(enricher, manual_case_enrichment, manual_event_enrichment, mo):
+    mo.ui.tabs({
+        "Enricher": enricher,
+        "Manual Event Enrichment": manual_event_enrichment,
+        "Manual Case Enrichment": manual_case_enrichment
+    })
+    return
 
 
 @app.cell(hide_code=True)
