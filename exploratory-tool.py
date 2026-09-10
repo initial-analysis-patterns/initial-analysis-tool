@@ -34,7 +34,7 @@ def _():
     dqu = importlib.reload(dqu)
     import structure_util as su
     su = importlib.reload(su)
-    return Path, au, dqu, mo, np, nx, pd, pm4py, px, tcu
+    return Path, au, dqu, mo, np, nx, pd, pm4py, px, su, tcu
 
 
 @app.cell(hide_code=True)
@@ -539,13 +539,19 @@ def _(mo):
 
 @app.cell(hide_code=True)
 def _(
+    ACTIVITY,
     CARRIED_COLUMNS,
+    CASE_ID,
+    COMPLETION_TIME,
+    activity_folding_code_editor,
+    activity_folding_submit_button,
     au,
     enricher,
     enrichment_applied,
     event_enrichment_code_editor,
     event_enrichment_submit_button,
     initialized_event_log,
+    su,
 ):
     enrichment_applied  # re-run this cell whenever the widget applies
 
@@ -554,6 +560,23 @@ def _(
     # add manual enrichments here
     if event_enrichment_submit_button.value:
         exec(event_enrichment_code_editor.value)
+
+    # apply the activity folding rule
+    activity_folding_summary = None
+    folded_attributes = []
+
+    if activity_folding_submit_button.value:
+        _folding_baseline = su.get_folding_baseline(event_log, ACTIVITY)
+
+        event_log = su.apply_activity_folding(
+            event_log,
+            activity_folding_code_editor.value,
+            context={'CASE_ID': CASE_ID, 'ACTIVITY': ACTIVITY, 'COMPLETION_TIME': COMPLETION_TIME},
+        )
+
+        activity_folding_summary, folded_attributes = su.summarize_activity_folding(
+            _folding_baseline, event_log, ACTIVITY
+        )
 
     # characterize the functional relationships between all attribute pairs.
     # The widget's own relative times are left out: they are near-unique by
@@ -568,7 +591,12 @@ def _(
     # put the initialization's row-level bookkeeping back, by index
     for _col in CARRIED_COLUMNS:
         event_log[_col] = initialized_event_log[_col]
-    return attribute_relationships, event_log
+    return (
+        activity_folding_summary,
+        attribute_relationships,
+        event_log,
+        folded_attributes,
+    )
 
 
 @app.cell(hide_code=True)
@@ -623,6 +651,58 @@ def _(
     if case_enrichment_submit_button.value:
         exec(case_enrichment_code_editor.value)
     return (case_log,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    _sample_folding = '''def fold_activities(df):
+        # Relevant for the Sepsis event log: fold "Release <letter>" into "Release",
+        # keeping the letter in a new attribute ReleaseCode.
+        release_code = df[ACTIVITY].str.extract(r'^Release ([A-Za-z])$')[0]
+
+        df['ReleaseCode'] = release_code
+        df.loc[release_code.notna(), ACTIVITY] = 'Release'
+
+        return df
+    '''
+
+    activity_folding_code_editor = mo.ui.code_editor(
+        value=_sample_folding,
+        language="python",
+        label="Define fold_activities(df)",
+    )
+
+    activity_folding_submit_button = mo.ui.run_button(label="Apply folding")
+
+    _intro = mo.md(
+        "Fold activity types whose distinction is not needed into a common activity type, optionally "
+        "keeping the distinction in a new attribute. The function receives a copy of the enriched event "
+        "log and returns the modified log; `CASE_ID`, `ACTIVITY`, `COMPLETION_TIME` and `pd` are available. "
+        "The folded log replaces the event log for all analyses below."
+    )
+
+    activity_folding = mo.vstack([_intro, activity_folding_code_editor, activity_folding_submit_button])
+    return (
+        activity_folding,
+        activity_folding_code_editor,
+        activity_folding_submit_button,
+    )
+
+
+@app.cell(hide_code=True)
+def _(activity_folding_summary, folded_attributes, mo):
+    if activity_folding_summary is None:
+        activity_folding_result = mo.md("No folding applied. Press *Apply folding* to run the rule.")
+    else:
+        activity_folding_result = mo.vstack([
+            mo.md(
+                f"Activity types after folding: **{len(activity_folding_summary[activity_folding_summary['Events after'] > 0])}** "
+                f"(before: {len(activity_folding_summary[activity_folding_summary['Events before'] > 0])})."
+                + (f" Added attributes: {folded_attributes}." if folded_attributes else "")
+            ),
+            activity_folding_summary,
+        ])
+    return (activity_folding_result,)
 
 
 @app.cell(hide_code=True)
@@ -737,11 +817,19 @@ def _(
 
 
 @app.cell(hide_code=True)
-def _(enricher, manual_case_enrichment, manual_event_enrichment, mo):
+def _(
+    activity_folding,
+    activity_folding_result,
+    enricher,
+    manual_case_enrichment,
+    manual_event_enrichment,
+    mo,
+):
     mo.ui.tabs({
         "Enricher": enricher,
         "Manual Event Enrichment": manual_event_enrichment,
-        "Manual Case Enrichment": manual_case_enrichment
+        "Manual Case Enrichment": manual_case_enrichment,
+        "Activity Folding": mo.vstack([activity_folding, activity_folding_result]),
     })
     return
 
@@ -1412,7 +1500,8 @@ def _(mo):
     rule_check_button = mo.ui.run_button(label="Check rule")
 
     mo.vstack([
-        mo.md("Domain-specific expectations about attribute values can be expressed as a rule and checked against the log. Write a function `check_rule(df)` that returns the violations."),
+        mo.md("Domain-specific expectations about attribute values can be expressed as a rule and checked against the log."),
+        mo.md("Write a function `check_rule(df)` that returns the rule violations."),
         rule_code_editor,
         rule_check_button,
     ])
