@@ -756,7 +756,7 @@ def _(mo):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(activity_list, mo):
     activity_multiselect = mo.ui.multiselect(
         options=activity_list,
@@ -766,7 +766,7 @@ def _(activity_list, mo):
     return (activity_multiselect,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     hide_case_features_checkbox = mo.ui.checkbox(
         label="Hide attributes that are also case-level attributes"
@@ -1376,6 +1376,98 @@ def _(
 @app.cell(hide_code=True)
 def _(candidate_sets):
     candidate_sets
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Attribute Rule Compliance
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    _sample_rule = '''def check_rule(df):
+        # Relevant for the Sepsis event log: attribute SIRSCriteria2OrMore is expected to be True if at least
+        # two of the attributes SIRSCritHeartRate, SIRSCritLeucos, SIRSCritTachypnea, and SIRSCritTemperature are True.
+    
+        criteria = ['SIRSCritHeartRate', 'SIRSCritLeucos', 'SIRSCritTachypnea', 'SIRSCritTemperature']
+
+        # events where the attributes are not populated cannot be evaluated and are not violations
+        evaluable = df[criteria + ['SIRSCriteria2OrMore']].notna().all(axis=1)
+        populated = df[evaluable]
+
+        expected = populated[criteria].astype(bool).sum(axis=1) >= 2
+        return populated[expected != populated['SIRSCriteria2OrMore'].astype(bool)]
+    '''
+
+    rule_code_editor = mo.ui.code_editor(
+        value=_sample_rule,
+        language="python",
+        label="Define check_rule(df):",
+    )
+
+    rule_check_button = mo.ui.run_button(label="Check rule")
+
+    mo.vstack([
+        mo.md("Domain-specific expectations about attribute values can be expressed as a rule and checked against the log. Write a function `check_rule(df)` that returns the violations."),
+        rule_code_editor,
+        rule_check_button,
+    ])
+    return rule_check_button, rule_code_editor
+
+
+@app.cell(hide_code=True)
+def _(
+    ACTIVITY,
+    CASE_ID,
+    COMPLETION_TIME,
+    dqu,
+    event_log,
+    mo,
+    np,
+    rule_check_button,
+    rule_code_editor,
+):
+    # Evaluate the user-defined rule and report the violations
+    if not rule_check_button.value:
+        rule_check_result = mo.md("Press *Check rule* to evaluate the rule.")
+    else:
+        try:
+            rule_violations = dqu.run_rule_check(
+                event_log,
+                rule_code_editor.value,
+                context={
+                    'CASE_ID': CASE_ID,
+                    'ACTIVITY': ACTIVITY,
+                    'COMPLETION_TIME': COMPLETION_TIME,
+                    'np': np,
+                },
+            )
+
+            _summary, _violating_cases = dqu.summarize_rule_violations(
+                event_log, rule_violations, CASE_ID
+            )
+
+            rule_check_result = mo.vstack([
+                _summary,
+                mo.md(
+                    "The violations could not be attributed to cases: the returned frame has "
+                    f"no '{CASE_ID}' column and is not indexed by it."
+                    if _violating_cases is None
+                    else f"Violating cases ({len(_violating_cases)}): {_violating_cases[:50]}"
+                    + (" ..." if len(_violating_cases) > 50 else "")
+                ),
+                mo.ui.table(rule_violations, selection=None, page_size=15),
+            ])
+        except Exception as _error:
+            rule_check_result = mo.md(
+                f"The rule could not be evaluated: `{type(_error).__name__}: {_error}`"
+            )
+
+    rule_check_result
     return
 
 
