@@ -470,9 +470,9 @@ def _(ACTIVITY_dropdown, CASE_ID_dropdown, COMPLETION_TIME_dropdown):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Log Enrichment
+    ## Log Modification
 
-    The widget takes an event log and creates a new event log and an accompanying case log, allowing for enrichments on each level. There are two tabs, one for event log enrichment and one for case log enrichment. An applied
+    The widget takes an event log and creates a new event log and an accompanying case log, allowing for enrichments on each level. It also allows activity folding and unfolding. In the Enricher tab, there are two sub-tabs, one for event log enrichment and one for case log enrichment. An applied
     event log enrichment can be used in the case log enrichment. The widget employs a staging mechanism
     so that not every change leads to a full recomputation, only when changes are applied.
 
@@ -480,7 +480,9 @@ def _(mo):
     zone, granularity, time frame, ordering or the mandatory-attribute dropdowns
     above rebuilds it and clears what has been applied. Changes below do not have that effect.
 
-    Furthermore, below the widget there is also the possibility of further manual enrichment.
+    Furthermore, there is also the possibility of further manual enrichment at both the event level and case level.
+
+    Finally, the Activity Folding and Activity Unfolding tabs allow specifying a folding, resp. unfolding rule.
     """)
     return
 
@@ -545,6 +547,8 @@ def _(
     COMPLETION_TIME,
     activity_folding_code_editor,
     activity_folding_submit_button,
+    activity_unfolding_code_editor,
+    activity_unfolding_submit_button,
     au,
     enricher,
     enrichment_applied,
@@ -566,7 +570,7 @@ def _(
     folded_attributes = []
 
     if activity_folding_submit_button.value:
-        _folding_baseline = su.get_folding_baseline(event_log, ACTIVITY)
+        _folding_baseline = su.get_activity_baseline(event_log, ACTIVITY)
 
         event_log = su.apply_activity_folding(
             event_log,
@@ -574,8 +578,25 @@ def _(
             context={'CASE_ID': CASE_ID, 'ACTIVITY': ACTIVITY, 'COMPLETION_TIME': COMPLETION_TIME},
         )
 
-        activity_folding_summary, folded_attributes = su.summarize_activity_folding(
+        activity_folding_summary, folded_attributes = su.summarize_activity_transformation(
             _folding_baseline, event_log, ACTIVITY
+        )
+
+    # apply the activity unfolding rule
+    activity_unfolding_summary = None
+    unfolded_attributes = []
+
+    if activity_unfolding_submit_button.value:
+        _unfolding_baseline = su.get_activity_baseline(event_log, ACTIVITY)
+
+        event_log = su.apply_activity_unfolding(
+            event_log,
+            activity_unfolding_code_editor.value,
+            context={'CASE_ID': CASE_ID, 'ACTIVITY': ACTIVITY, 'COMPLETION_TIME': COMPLETION_TIME},
+        )
+
+        activity_unfolding_summary, unfolded_attributes = su.summarize_activity_transformation(
+            _unfolding_baseline, event_log, ACTIVITY
         )
 
     # characterize the functional relationships between all attribute pairs.
@@ -593,9 +614,11 @@ def _(
         event_log[_col] = initialized_event_log[_col]
     return (
         activity_folding_summary,
+        activity_unfolding_summary,
         attribute_relationships,
         event_log,
         folded_attributes,
+        unfolded_attributes,
     )
 
 
@@ -676,8 +699,7 @@ def _(mo):
 
     _intro = mo.md(
         "Fold activity types whose distinction is not needed into a common activity type, optionally "
-        "keeping the distinction in a new attribute. The function receives a copy of the enriched event "
-        "log and returns the modified log; `CASE_ID`, `ACTIVITY`, `COMPLETION_TIME` and `pd` are available. "
+        "keeping the distinction in a new attribute. "
         "The folded log replaces the event log for all analyses below."
     )
 
@@ -690,19 +712,65 @@ def _(mo):
 
 
 @app.cell(hide_code=True)
-def _(activity_folding_summary, folded_attributes, mo):
-    if activity_folding_summary is None:
-        activity_folding_result = mo.md("No folding applied. Press *Apply folding* to run the rule.")
-    else:
-        activity_folding_result = mo.vstack([
+def _(mo):
+    _sample_unfolding = '''def unfold_activities(df):
+        # Relevant for the Road Traffic Fine Management event log: an event named "Payment" is a
+        # PartialPayment if paymentAmount is less than totalPaymentAmount, and a FullPayment otherwise.
+        payment = df[ACTIVITY] == 'Payment'
+        is_partial = df['paymentAmount'] < df['totalPaymentAmount']
+
+        df.loc[payment & is_partial, ACTIVITY] = 'PartialPayment'
+        df.loc[payment & ~is_partial, ACTIVITY] = 'FullPayment'
+
+        return df
+    '''
+
+    activity_unfolding_code_editor = mo.ui.code_editor(
+        value=_sample_unfolding,
+        language="python",
+        label="Define unfold_activities(df)",
+    )
+
+    activity_unfolding_submit_button = mo.ui.run_button(label="Apply unfolding")
+
+    _intro = mo.md(
+        "Give semantically distinct activities that are implicitly represented by one activity type "
+        "their own activity type, based on a rule over the recorded attribute values. "
+        "The unfolded log replaces the event log for all analyses below."
+    )
+
+    activity_unfolding = mo.vstack([_intro, activity_unfolding_code_editor, activity_unfolding_submit_button])
+    return (
+        activity_unfolding,
+        activity_unfolding_code_editor,
+        activity_unfolding_submit_button,
+    )
+
+
+@app.cell(hide_code=True)
+def _(
+    activity_folding_summary,
+    activity_unfolding_summary,
+    folded_attributes,
+    mo,
+    unfolded_attributes,
+):
+    def _transformation_view(summary, added_attributes, name):
+        if summary is None:
+            return mo.md(f"No {name} applied.")
+
+        return mo.vstack([
             mo.md(
-                f"Activity types after folding: **{len(activity_folding_summary[activity_folding_summary['Events after'] > 0])}** "
-                f"(before: {len(activity_folding_summary[activity_folding_summary['Events before'] > 0])})."
-                + (f" Added attributes: {folded_attributes}." if folded_attributes else "")
+                f"Activity types after {name}: **{(summary['Events after'] > 0).sum()}** "
+                f"(before: {(summary['Events before'] > 0).sum()})."
+                + (f" Added attributes: {added_attributes}." if added_attributes else "")
             ),
-            activity_folding_summary,
+            summary,
         ])
-    return (activity_folding_result,)
+
+    activity_folding_result = _transformation_view(activity_folding_summary, folded_attributes, "folding")
+    activity_unfolding_result = _transformation_view(activity_unfolding_summary, unfolded_attributes, "unfolding")
+    return activity_folding_result, activity_unfolding_result
 
 
 @app.cell(hide_code=True)
@@ -820,6 +888,8 @@ def _(
 def _(
     activity_folding,
     activity_folding_result,
+    activity_unfolding,
+    activity_unfolding_result,
     enricher,
     manual_case_enrichment,
     manual_event_enrichment,
@@ -830,6 +900,7 @@ def _(
         "Manual Event Enrichment": manual_event_enrichment,
         "Manual Case Enrichment": manual_case_enrichment,
         "Activity Folding": mo.vstack([activity_folding, activity_folding_result]),
+        "Activity Unfolding": mo.vstack([activity_unfolding, activity_unfolding_result]),
     })
     return
 
@@ -1480,7 +1551,7 @@ def _(mo):
     _sample_rule = '''def check_rule(df):
         # Relevant for the Sepsis event log: attribute SIRSCriteria2OrMore is expected to be True if at least
         # two of the attributes SIRSCritHeartRate, SIRSCritLeucos, SIRSCritTachypnea, and SIRSCritTemperature are True.
-    
+
         criteria = ['SIRSCritHeartRate', 'SIRSCritLeucos', 'SIRSCritTachypnea', 'SIRSCritTemperature']
 
         # events where the attributes are not populated cannot be evaluated and are not violations

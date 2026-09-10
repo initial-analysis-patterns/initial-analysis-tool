@@ -34,45 +34,53 @@ def get_occurrence_distribution(occurrence_counts, activity):
     })
 
 
-def get_folding_baseline(event_log, activity_column):
-    """Record what is needed to describe a folding, without copying the log itself."""
+def get_activity_baseline(event_log, activity_column):
+    """Record what is needed to describe an activity transformation, without copying the log itself."""
     return event_log[activity_column].value_counts(), list(event_log.columns)
 
 
-def apply_activity_folding(event_log, folding_code, context=None):
-    """Execute user-provided folding code on the event log and return the resulting log.
+def apply_activity_transformation(event_log, transformation_code, function_name, context=None):
+    """Execute user-provided code on the event log and return the resulting log.
 
-    The code must define fold_activities(df), which receives the event log itself - not a copy -
-    and returns it after modification, so that assignments such as df[col] = ... change the log in
-    place. It is executed in a namespace containing pandas as 'pd' plus whatever is passed in
+    The code must define a function named function_name, which receives the event log itself - not a
+    copy - and returns it after modification, so that assignments such as df[col] = ... change the
+    log in place. It is executed in a namespace containing pandas as 'pd' plus whatever is passed in
     context (typically the mandatory attribute names).
     """
     scope = {'pd': pd}
     if context:
         scope.update(context)
 
-    exec(folding_code, scope)
+    exec(transformation_code, scope)
 
-    if 'fold_activities' not in scope:
-        raise ValueError("The folding code must define a function fold_activities(df).")
+    if function_name not in scope:
+        raise ValueError(f"The code must define a function {function_name}(df).")
 
-    folded_log = scope['fold_activities'](event_log)
+    transformed_log = scope[function_name](event_log)
 
-    if not isinstance(folded_log, pd.DataFrame):
-        raise TypeError("fold_activities(df) must return the modified event log as a DataFrame.")
+    if not isinstance(transformed_log, pd.DataFrame):
+        raise TypeError(f"{function_name}(df) must return the modified event log as a DataFrame.")
 
-    return folded_log
+    return transformed_log
 
 
-def summarize_activity_folding(baseline, folded_log, activity_column):
-    """Compare the activity types before and after folding, and list the attributes that were added."""
+def apply_activity_folding(event_log, folding_code, context=None):
+    return apply_activity_transformation(event_log, folding_code, 'fold_activities', context)
+
+
+def apply_activity_unfolding(event_log, unfolding_code, context=None):
+    return apply_activity_transformation(event_log, unfolding_code, 'unfold_activities', context)
+
+
+def summarize_activity_transformation(baseline, transformed_log, activity_column):
+    """Compare the activity types before and after the transformation, and list the attributes added."""
     before, before_columns = baseline
-    after = folded_log[activity_column].value_counts()
+    after = transformed_log[activity_column].value_counts()
 
     counts = pd.DataFrame({'Events before': before, 'Events after': after}).fillna(0).astype(int)
 
     counts['Change'] = [
-        'folded away' if row['Events after'] == 0
+        'removed' if row['Events after'] == 0
         else 'new' if row['Events before'] == 0
         else 'unchanged' if row['Events before'] == row['Events after']
         else 'changed'
@@ -82,6 +90,6 @@ def summarize_activity_folding(baseline, folded_log, activity_column):
     counts = counts.sort_values(['Change', 'Events after'], ascending=[True, False])
     counts.index.name = activity_column
 
-    added_attributes = [col for col in folded_log.columns if col not in before_columns]
+    added_attributes = [col for col in transformed_log.columns if col not in before_columns]
 
     return counts, added_attributes
