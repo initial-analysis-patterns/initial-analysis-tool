@@ -34,7 +34,9 @@ def _():
     dqu = importlib.reload(dqu)
     import structure_util as su
     su = importlib.reload(su)
-    return Path, au, dqu, mo, np, nx, pd, pm4py, px, su, tcu
+    import display_util as du
+    du = importlib.reload(du)
+    return Path, au, dqu, du, mo, np, nx, pd, pm4py, px, su, tcu
 
 
 @app.cell(hide_code=True)
@@ -940,6 +942,7 @@ def _(
     MANDATORY_COLUMNS,
     activity_multiselect,
     activity_schema,
+    du,
     event_log,
     hide_case_features_checkbox,
     mo,
@@ -968,7 +971,7 @@ def _(
         mo.md("Select one or more activities to view only the data attributes that are common to their schemas:"),
         activity_multiselect,
         hide_case_features_checkbox,
-        mo.ui.table(_filtered_log, selection=None, page_size=15)
+        du.table(_filtered_log, selection=None, page_size=15)
         if _selected_activities
         else mo.md("_No activities selected._"),
     ])
@@ -983,16 +986,20 @@ def _(
     MANDATORY_COLUMNS,
     STANDARD_COLUMNS,
     case_log,
+    du,
     event_log,
     local_view,
     mo,
 ):
+    # du.table rather than the frames themselves: a timedelta column pushes marimo's
+    # chart builder off the Arrow path, and the CSV fallback renames every column
+    # containing a '.' -- which is every tracked enrichment.
     mo.ui.tabs({
-        "Global Attributes": event_log[[col for col in MANDATORY_COLUMNS+STANDARD_COLUMNS if col not in CASE_FEATURE_COLUMNS]],
+        "Global Attributes": du.table(event_log[[col for col in MANDATORY_COLUMNS+STANDARD_COLUMNS if col not in CASE_FEATURE_COLUMNS]]),
         "Local Attributes": local_view,
-        "Case Inspection": event_log[[col for col in MANDATORY_COLUMNS+STANDARD_COLUMNS+['folded_data'] if col not in CASE_FEATURE_COLUMNS]],
-        "Case Log": case_log,
-        "Raw Events": event_log
+        "Case Inspection": du.table(event_log[[col for col in MANDATORY_COLUMNS+STANDARD_COLUMNS+['folded_data'] if col not in CASE_FEATURE_COLUMNS]]),
+        "Case Log": du.table(case_log),
+        "Raw Events": du.table(event_log)
     })
     return
 
@@ -1083,6 +1090,7 @@ def _(
     STANDARD_COLUMNS,
     attribute_overview,
     au,
+    du,
     event_log,
     mo,
     partial_schema_usages,
@@ -1101,7 +1109,7 @@ def _(
 
     activity_attribute_values = au.summarize_attribute_values(_selected_events, _schema_attributes)
 
-    activity_events = mo.ui.table(
+    activity_events = du.table(
         _selected_events[MANDATORY_COLUMNS + STANDARD_COLUMNS + _extra_schema_columns],
         selection=None,
         page_size=15,
