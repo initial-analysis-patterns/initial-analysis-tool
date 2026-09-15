@@ -1090,6 +1090,7 @@ def _(
     STANDARD_COLUMNS,
     attribute_overview,
     au,
+    du,
     event_log,
     mo,
     partial_schema_usages,
@@ -1108,7 +1109,7 @@ def _(
 
     activity_attribute_values = au.summarize_attribute_values(_selected_events, _schema_attributes)
 
-    activity_events = mo.ui.table(
+    activity_events = du.table(
         _selected_events[MANDATORY_COLUMNS + STANDARD_COLUMNS + _extra_schema_columns],
         selection=None,
         page_size=15,
