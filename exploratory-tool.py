@@ -78,6 +78,12 @@ def _(browser, mo, pd, pm4py):
 def _(mo):
     mo.md(r"""
     ## Log Initialization
+
+    The widget allows configuring some log initialization parameters, such as specifying a timestamp granularity for all timestamp columns, or which attributes are mandatory.
+
+    Moreover, the widget allows selecting a subset of cases from the log for initial analysis based on their full containment in a specified time frame.
+
+    A summary of the initialization is provided, along with initial insights into the detected timestamp attributes.
     """)
     return
 
@@ -474,17 +480,19 @@ def _(mo):
     mo.md(r"""
     ## Log Modification
 
-    The widget takes an event log and creates a new event log and an accompanying case log, allowing for enrichments on each level. It also allows activity folding and unfolding. In the Enricher tab, there are two sub-tabs, one for event log enrichment and one for case log enrichment. An applied
+    The widget below allows enriching a log at the event and case level. It also allows activity folding and unfolding.
+
+    In the Enricher tab, there are two sub-tabs, one for event log enrichment and one for case log enrichment. An applied
     event log enrichment can be used in the case log enrichment. The widget employs a staging mechanism
-    so that not every change leads to a full recomputation, only when changes are applied.
+    so that not every change leads to a full recomputation. Recomputation only takes place when changes are applied.
+
+    Furthermore, there is also the possibility of further manual enrichment at both the event level and case level. This requires writing Python code in a dedicated code cell.
+
+    Finally, the Activity Folding and Activity Unfolding tabs allow specifying a folding, resp. unfolding rule as Python code in dedicated cells.
 
     **Note:** the widget is built from the initialized log, so changing the time
     zone, granularity, time frame, ordering or the mandatory-attribute dropdowns
     above rebuilds it and clears what has been applied. Changes below do not have that effect.
-
-    Furthermore, there is also the possibility of further manual enrichment at both the event level and case level.
-
-    Finally, the Activity Folding and Activity Unfolding tabs allow specifying a folding, resp. unfolding rule.
     """)
     return
 
@@ -912,7 +920,13 @@ def _(mo):
     mo.md(r"""
     ## Events View
 
-    Use for overview or filter for a specific case, activity, or time period. Switch between event log and case table view.
+    Use the widget below for having an overview of the log and perform univariate and bivariate analyses of the attributes.
+
+    Multiple views are available: only global attributes, local attributes, inspection by case, view of the log as a case log, and view of the raw events.
+
+    Through the widget it is possible to filter, e.g., for a specific case, activity, or time period, and to inspect statistics, e.g., about an attribute's values.
+
+    Besides showing the data in tabular form, the widget allows also creating visualizations such as histograms.
     """)
     return
 
@@ -1009,7 +1023,7 @@ def _(mo):
     mo.md(r"""
     ## Activity Schemas View
 
-    Showing the activity schemas, i.e. the attributes that take at least one non-null value across the log for each activity type. Mandatory attributes are excluded from the list. Schema overlaps are attributes that belong to more than one activity schema.
+    The widget below shows the activity schemas, i.e. the attributes that take at least one non-null value across the log for each activity type, schema overlaps, i.e. are attributes that belong to more than one activity schema, attributes information, also in relation to a selected activity.
     """)
     return
 
@@ -1131,7 +1145,9 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Analysis of Attribute Relationships
+    ## Analysis of Attribute Dependencies and Functional Relationships
+
+    The widgets below allow inspecting attribute dependencies and any attribute functional relationships that have been identified in the log.
     """)
     return
 
@@ -1205,7 +1221,6 @@ def _(attribute_relationships, au, mo):
         mo.md(
             "Select a pair of attributes in a functional relationship, i.e. where the values of one "
             "attribute determine the values of the other, to inspect the mapping between their values "
-            "(if no such pairs have been identified, the dropdown is empty):"
         ),
         mo.md("Over the events where both attributes are populated, an attribute A functionally determines an attribute B if every value of A co-occurs with exactly one value of B. Pairs are characterized as one-to-one (both directions), many-to-one or one-to-many (one direction). Many-to-many relationships are determined when neither of the former is detected. Support is the share of events where both attributes are populated. "
             "Pairs that are not in functional relationships are listed separately with their reason: many-to-many, trivial (one attribute takes fewer than two distinct values on the jointly populated events), or disjoint (the attributes are never populated on the same event)."),
@@ -1262,23 +1277,9 @@ def _(
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ##Complexity Reduction
-    """)
-    return
+    ## Super event candidates
 
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ### Timestamp Coincidence
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    ##### Super event detection
+    The widget below allows inspecting any candidates identified for super events in the log.
     """)
     return
 
@@ -1373,7 +1374,9 @@ def _(set_summary):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ##### Batch event detection
+    ## Batch event candidates
+
+    The widget below allows inspecting any candidates identified for batching in the log.
     """)
     return
 
@@ -1416,7 +1419,9 @@ def _(batch_events):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ### Transaction Detection
+    ## Transaction detection
+
+    The widget below allows inspecting any candidates identified for transactions in the log. Events can be excluded from the detection of transaction candidates by specifying their activity type.
     """)
     return
 
@@ -1549,7 +1554,9 @@ def _(candidate_sets):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Attribute Rule Compliance
+    ## Consistency check
+
+    The widget below allows checking for consistency of the log with respect to a user-specified rule. The rule is specified as Python code in the code cell. An example rule is provided that applies to the Sepsis event log. Violations to the rule are reported below.
     """)
     return
 
