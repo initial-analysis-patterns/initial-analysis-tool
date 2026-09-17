@@ -478,7 +478,7 @@ def _(ACTIVITY_dropdown, CASE_ID_dropdown, COMPLETION_TIME_dropdown):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ## Log Modification
+    ## Log Enrichment, Activity Folding & Unfolding
 
     The widget below allows enriching a log at the event and case level. It also allows activity folding and unfolding.
 
@@ -486,9 +486,16 @@ def _(mo):
     event log enrichment can be used in the case log enrichment. The widget employs a staging mechanism
     so that not every change leads to a full recomputation. Recomputation only takes place when changes are applied.
 
+    * Example: under sub-tab "Event log", "Running aggregation" allows forward filling for all events the recorded value of a given attribute (e.g., "Leucocytes") until a new value is recorded.
+    * Example: under sub-tab "Case log", "Activity counts" allows adding a case-level attribute recording the number of occurrences of a given activity within each case.
+
     Furthermore, there is also the possibility of further manual enrichment at both the event level and case level. This requires writing Python code in a dedicated code cell.
 
+    * Examples are provided: code implementing weekday enrichment for the event level, and code implementing events per day enrichment at the case level.
+
     Finally, the Activity Folding and Activity Unfolding tabs allow specifying a folding, resp. unfolding rule as Python code in dedicated cells.
+
+    * Examples are provided: folding of "Release $x" activities for the Sepsis log; unfolding of "Payment" activities for the RTFM log.
 
     **Note:** the widget is built from the initialized log, so changing the time
     zone, granularity, time frame, ordering or the mandatory-attribute dropdowns
@@ -1556,7 +1563,9 @@ def _(mo):
     mo.md(r"""
     ## Consistency check
 
-    The widget below allows checking for consistency of the log with respect to a user-specified rule. The rule is specified as Python code in the code cell. An example rule is provided that applies to the Sepsis event log. Violations to the rule are reported below.
+    The widget below allows checking for consistency of the log with respect to a user-specified rule. The rule is specified as Python code in the code cell. Violations to the rule are reported below.
+
+    * Example: a rule is provided that applies to the Sepsis event log. The rule encodes the expectation that attribute "SIRSCriteria2OrMore" has value "true" if at least two "SIRS" attributes have value "true" in the case.
     """)
     return
 
