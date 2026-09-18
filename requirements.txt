@@ -1,0 +1,20 @@
+# Direct dependencies for exploratory-tool.py (Initial Event Log Analysis tool).
+# Pinned to the versions the tool was developed with; pip resolves the
+# transitive dependencies for the installing platform.
+#
+# Note: if pm4py cannot read XES with variant="rustxes" on a clean install,
+# add `rustxes` here. If `eclear` is not installable from a public index,
+# replace the line below with its correct source (a Git URL) or bundle the
+# module in the repository.
+
+marimo==0.24.0
+pandas==3.0.5
+numpy==2.5.2
+networkx==3.6.1
+pm4py==2.7.23.5
+altair==6.2.2
+vegafusion==2.0.3
+vl-convert-python==1.9.0.post1
+plotly==6.9.0
+pytz==2026.3.post1
+eclear==0.1.0
