@@ -9,7 +9,9 @@ batches, and transaction candidates) while exploring the results interactively.
 
 The tool is a [marimo](https://marimo.io) notebook (`exploratory-tool.py`).
 **No prior knowledge of marimo is required**; this README explains everything
-needed to run and use it.
+needed to run it. The [Marimo guide](https://github.com/initial-analysis-patterns/initial-analysis-tool/blob/main/Marimo_guide.pdf)
+provides an overview of the usage, with explicit indication of the patterns for
+initial analysis that are realized at each part of the notebook.
 
 ---
 
